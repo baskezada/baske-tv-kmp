@@ -3,9 +3,6 @@ package cl.baske.tv.ui.detail
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -44,6 +41,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import cl.baske.tv.ui.platform.Focusable
+import cl.baske.tv.ui.platform.LocalDevice
+import cl.baske.tv.ui.platform.requestIfTv
 import cl.baske.tv.ui.theme.LocalAccent
 import coil3.compose.AsyncImage
 import org.koin.androidx.compose.koinViewModel
@@ -54,11 +54,13 @@ fun DetailScreen(itemId: String, onBack: () -> Unit, onPlay: (String) -> Unit) {
     val viewModel = koinViewModel<DetailViewModel>(key = itemId) { parametersOf(itemId) }
     val state by viewModel.state.collectAsStateWithLifecycle()
     val accent = LocalAccent.current
+    val device = LocalDevice.current
+    val metrics = device.metrics
     val playFocus = remember { FocusRequester() }
 
     BackHandler { onBack() }
     LaunchedEffect(state.loading, state.playTargetId) {
-        if (!state.loading && state.playTargetId != null) runCatching { playFocus.requestFocus() }
+        if (!state.loading && state.playTargetId != null) playFocus.requestIfTv(device)
     }
 
     Box(Modifier.fillMaxSize().background(Color(0xFF080808))) {
@@ -66,9 +68,9 @@ fun DetailScreen(itemId: String, onBack: () -> Unit, onPlay: (String) -> Unit) {
             state.loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Color.White) }
             state.error != null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(state.error!!, color = Color.White) }
             else -> LazyColumn(contentPadding = PaddingValues(bottom = 40.dp)) {
-                item(key = "header") { DetailHeader(state, accent, playFocus, onPlay) }
+                item(key = "header") { DetailHeader(state, accent, metrics, playFocus, onPlay) }
                 if (state.kind == DetailViewModel.Kind.Series) {
-                    item(key = "seasons") { SeasonChips(state, accent) { viewModel.selectSeason(it) } }
+                    item(key = "seasons") { SeasonChips(state, accent, metrics) { viewModel.selectSeason(it) } }
                     if (state.episodesLoading) {
                         item(key = "epsLoading") {
                             Box(Modifier.fillMaxWidth().padding(40.dp), contentAlignment = Alignment.Center) {
@@ -76,7 +78,7 @@ fun DetailScreen(itemId: String, onBack: () -> Unit, onPlay: (String) -> Unit) {
                             }
                         }
                     } else {
-                        items(state.episodes, key = { it.id }) { ep -> EpisodeRow(ep, accent) { onPlay(ep.id) } }
+                        items(state.episodes, key = { it.id }) { ep -> EpisodeRow(ep, accent, metrics) { onPlay(ep.id) } }
                     }
                 }
             }
@@ -88,10 +90,13 @@ fun DetailScreen(itemId: String, onBack: () -> Unit, onPlay: (String) -> Unit) {
 private fun DetailHeader(
     state: DetailViewModel.UiState,
     accent: Color,
+    metrics: cl.baske.tv.ui.platform.Metrics,
     playFocus: FocusRequester,
     onPlay: (String) -> Unit,
 ) {
-    Box(Modifier.fillMaxWidth().height(420.dp)) {
+    val device = LocalDevice.current
+    val headerHeight = if (device.isTv) 420.dp else 320.dp
+    Box(Modifier.fillMaxWidth().height(headerHeight)) {
         AsyncImage(
             model = state.backdropUrl,
             contentDescription = null,
@@ -101,17 +106,17 @@ private fun DetailHeader(
         Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0x99080808), Color(0xFF080808)))))
         Box(Modifier.fillMaxSize().background(Brush.horizontalGradient(listOf(Color(0xE6080808), Color.Transparent))))
 
-        Row(modifier = Modifier.align(Alignment.BottomStart).padding(start = 48.dp, end = 48.dp, bottom = 24.dp)) {
+        Row(modifier = Modifier.align(Alignment.BottomStart).padding(start = metrics.gutter, end = metrics.gutter, bottom = 24.dp)) {
             // Poster
             AsyncImage(
                 model = state.posterUrl,
                 contentDescription = state.title,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.width(150.dp).aspectRatio(2f / 3f).clip(RoundedCornerShape(10.dp)).background(Color(0xFF1A1A1A)),
+                modifier = Modifier.width(metrics.detailPosterWidth).aspectRatio(2f / 3f).clip(RoundedCornerShape(10.dp)).background(Color(0xFF1A1A1A)),
             )
-            Spacer(Modifier.width(28.dp))
-            Column(modifier = Modifier.width(640.dp)) {
-                Text(state.title, color = Color.White, fontSize = 34.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Spacer(Modifier.width(if (device.isTv) 28.dp else 16.dp))
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(state.title, color = Color.White, fontSize = metrics.detailTitleSize, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 if (state.meta.isNotEmpty()) {
                     Spacer(Modifier.height(8.dp))
                     Text(state.meta, color = Color(0xCCFFFFFF), fontSize = 14.sp)
@@ -126,12 +131,12 @@ private fun DetailHeader(
                 }
                 if (state.playTargetId != null) {
                     Spacer(Modifier.height(18.dp))
-                    Focusable(onClick = { onPlay(state.playTargetId!!) }, modifier = Modifier.focusRequester(playFocus)) { focused ->
+                    Focusable(onClick = { onPlay(state.playTargetId!!) }, modifier = Modifier.focusRequester(playFocus)) { highlighted ->
                         Row(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(50))
                                 .background(Color.White)
-                                .then(if (focused) Modifier.border(3.dp, accent, RoundedCornerShape(50)) else Modifier)
+                                .then(if (highlighted) Modifier.border(3.dp, accent, RoundedCornerShape(50)) else Modifier)
                                 .padding(horizontal = 26.dp, vertical = 12.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
@@ -147,19 +152,19 @@ private fun DetailHeader(
 }
 
 @Composable
-private fun SeasonChips(state: DetailViewModel.UiState, accent: Color, onSelect: (String) -> Unit) {
+private fun SeasonChips(state: DetailViewModel.UiState, accent: Color, metrics: cl.baske.tv.ui.platform.Metrics, onSelect: (String) -> Unit) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(start = 48.dp, end = 48.dp, top = 20.dp, bottom = 12.dp),
+        modifier = Modifier.fillMaxWidth().padding(start = metrics.gutter, end = metrics.gutter, top = 20.dp, bottom = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         state.seasons.forEach { season ->
             val selected = season.id == state.selectedSeasonId
-            Focusable(onClick = { onSelect(season.id) }) { focused ->
+            Focusable(onClick = { onSelect(season.id) }) { highlighted ->
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(50))
                         .background(if (selected) accent else Color(0x1FFFFFFF))
-                        .then(if (focused) Modifier.border(2.dp, Color.White, RoundedCornerShape(50)) else Modifier)
+                        .then(if (highlighted) Modifier.border(2.dp, Color.White, RoundedCornerShape(50)) else Modifier)
                         .padding(horizontal = 18.dp, vertical = 9.dp),
                 ) {
                     Text(season.name, color = if (selected) Color.Black else Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
@@ -170,14 +175,14 @@ private fun SeasonChips(state: DetailViewModel.UiState, accent: Color, onSelect:
 }
 
 @Composable
-private fun EpisodeRow(ep: DetailViewModel.EpisodeItem, accent: Color, onClick: () -> Unit) {
-    Focusable(onClick = onClick, modifier = Modifier.fillMaxWidth().padding(horizontal = 40.dp, vertical = 4.dp)) { focused ->
+private fun EpisodeRow(ep: DetailViewModel.EpisodeItem, accent: Color, metrics: cl.baske.tv.ui.platform.Metrics, onClick: () -> Unit) {
+    Focusable(onClick = onClick, modifier = Modifier.fillMaxWidth().padding(horizontal = metrics.gutter, vertical = 4.dp)) { highlighted ->
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(10.dp))
-                .background(if (focused) Color(0x14FFFFFF) else Color.Transparent)
-                .then(if (focused) Modifier.border(1.dp, Color(0x30FFFFFF), RoundedCornerShape(10.dp)) else Modifier)
+                .background(if (highlighted) Color(0x14FFFFFF) else Color.Transparent)
+                .then(if (highlighted) Modifier.border(1.dp, Color(0x30FFFFFF), RoundedCornerShape(10.dp)) else Modifier)
                 .padding(10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -202,14 +207,5 @@ private fun EpisodeRow(ep: DetailViewModel.EpisodeItem, accent: Color, onClick: 
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun Focusable(onClick: () -> Unit, modifier: Modifier = Modifier, content: @Composable (Boolean) -> Unit) {
-    val interaction = remember { MutableInteractionSource() }
-    val focused by interaction.collectIsFocusedAsState()
-    Box(modifier = modifier.clickable(interactionSource = interaction, indication = null, onClick = onClick)) {
-        content(focused)
     }
 }

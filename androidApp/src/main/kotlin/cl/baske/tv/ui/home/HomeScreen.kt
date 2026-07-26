@@ -1,12 +1,8 @@
-@file:OptIn(ExperimentalTvMaterial3Api::class)
-
 package cl.baske.tv.ui.home
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -38,6 +34,8 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -62,14 +60,13 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.tv.material3.Card
-import androidx.tv.material3.ExperimentalTvMaterial3Api
-import androidx.tv.material3.MaterialTheme
-import androidx.tv.material3.Text
-import androidx.tv.material3.darkColorScheme
 import cl.baske.tv.R
 import cl.baske.tv.data.HomeMode
 import cl.baske.tv.data.PrefsStore
+import cl.baske.tv.ui.platform.Focusable
+import cl.baske.tv.ui.platform.LocalDevice
+import cl.baske.tv.ui.platform.Metrics
+import cl.baske.tv.ui.platform.requestIfTv
 import cl.baske.tv.ui.theme.LocalAccent
 import coil3.compose.AsyncImage
 import org.koin.androidx.compose.koinViewModel
@@ -89,6 +86,8 @@ fun HomeScreen(
     val prefsStore = koinInject<PrefsStore>()
     val prefs by prefsStore.prefs.collectAsStateWithLifecycle()
     val accent = LocalAccent.current
+    val device = LocalDevice.current
+    val metrics = device.metrics
 
     val firstCardFocus = remember { FocusRequester() }
     val gearFocus = remember { FocusRequester() }
@@ -100,85 +99,87 @@ fun HomeScreen(
     val hasContent = state.rows.isNotEmpty()
     val featured = state.rows.firstOrNull()?.cards?.firstOrNull()
     val effectiveHero = when (prefs.homeMode) {
-        HomeMode.Vitrina -> heroCard ?: featured
+        // "Vitrina" solo tiene sentido con D-pad (el hero sigue a la card
+        // enfocada); con puntero se comporta igual que "Banner".
+        HomeMode.Vitrina -> if (device.isTv) heroCard ?: featured else featured
         HomeMode.Banner -> featured
         HomeMode.SinBanner -> null
     }
     val hasHero = effectiveHero != null
 
     // Foco inicial en la primera fila (NO en Reproducir): así al cargar el
-    // hero no se scrollea hacia arriba y el banner se ve completo.
+    // hero no se scrollea hacia arriba y el banner se ve completo. Solo aplica
+    // en Tv — con puntero no hay foco que restaurar.
     LaunchedEffect(hasContent) {
-        if (hasContent) runCatching { firstCardFocus.requestFocus() }
+        if (hasContent) firstCardFocus.requestIfTv(device)
     }
     // Target hacia el que baja el header (Reproducir si hay hero, si no la card).
     val belowHeaderFocus = if (hasHero) heroPlayFocus else firstCardFocus
     // Al subir desde la primera fila: al Reproducir del hero, o directo a los tabs.
     val firstCardUpTarget = if (hasHero) heroPlayFocus else navHomeFocus
 
-    MaterialTheme(colorScheme = darkColorScheme()) {
-        BoxWithConstraints(modifier = Modifier.fillMaxSize().background(Color(0xFF080808))) {
-            // Reservamos la altura del header para que el hero arranque debajo y
-            // se vea completo (antes el hero full-bleed quedaba tapado arriba).
-            val headerHeight = 72.dp
-            val heroHeight = (maxHeight - headerHeight) * 0.58f
+    BoxWithConstraints(modifier = Modifier.fillMaxSize().background(Color(0xFF080808))) {
+        val heroHeight = (maxHeight - metrics.headerHeight) * metrics.heroFraction
 
-            when {
-                activeTab != Tab.Home -> CenterMessage("Próximamente")
-                state.loading && state.rows.isEmpty() -> CenterMessage("Cargando…")
-                state.rows.isEmpty() && state.error != null -> CenterMessage(state.error!!)
-                else -> {
-                    val firstRowId = state.rows.first().id
-                    LazyColumn(
-                        contentPadding = PaddingValues(top = headerHeight, bottom = 32.dp),
-                        verticalArrangement = Arrangement.spacedBy(22.dp),
-                    ) {
-                        effectiveHero?.let { hero ->
-                            item(key = "hero") {
-                                HomeHero(
-                                    card = hero,
-                                    height = heroHeight,
-                                    accent = accent,
-                                    playFocus = heroPlayFocus,
-                                    upFocus = navHomeFocus,
-                                    downFocus = firstCardFocus,
-                                    onPlay = { onPlayItem(hero) },
-                                )
-                            }
-                        }
-                        items(state.rows, key = { it.id }) { row ->
-                            val isFirstRow = row.id == firstRowId
-                            RowSection(
-                                row = row,
-                                onCardClick = onCardClick,
-                                onCardFocused = { card ->
-                                    if (prefs.homeMode == HomeMode.Vitrina) heroCard = card
-                                },
-                                firstCardFocus = if (isFirstRow) firstCardFocus else null,
-                                firstCardUp = if (isFirstRow) firstCardUpTarget else null,
+        when {
+            activeTab != Tab.Home -> CenterMessage("Próximamente")
+            state.loading && state.rows.isEmpty() -> CenterMessage("Cargando…")
+            state.rows.isEmpty() && state.error != null -> CenterMessage(state.error!!)
+            else -> {
+                val firstRowId = state.rows.first().id
+                LazyColumn(
+                    contentPadding = PaddingValues(top = metrics.headerHeight, bottom = 32.dp),
+                    verticalArrangement = Arrangement.spacedBy(metrics.rowSpacing),
+                ) {
+                    effectiveHero?.let { hero ->
+                        item(key = "hero") {
+                            HomeHero(
+                                card = hero,
+                                height = heroHeight,
+                                accent = accent,
+                                metrics = metrics,
+                                playFocus = heroPlayFocus,
+                                upFocus = navHomeFocus,
+                                downFocus = firstCardFocus,
+                                onPlay = { onPlayItem(hero) },
                             )
                         }
                     }
+                    items(state.rows, key = { it.id }) { row ->
+                        val isFirstRow = row.id == firstRowId
+                        RowSection(
+                            row = row,
+                            metrics = metrics,
+                            onCardClick = onCardClick,
+                            onCardFocused = { card ->
+                                if (prefs.homeMode == HomeMode.Vitrina) heroCard = card
+                            },
+                            firstCardFocus = if (isFirstRow) firstCardFocus else null,
+                            firstCardUp = if (isFirstRow) firstCardUpTarget else null,
+                        )
+                    }
                 }
             }
-
-            HomeHeader(
-                accent = accent,
-                activeTab = activeTab,
-                onTabFocused = { activeTab = it },
-                gearFocus = gearFocus,
-                navHomeFocus = navHomeFocus,
-                downFocus = belowHeaderFocus.takeIf { hasContent && activeTab == Tab.Home },
-                onOpenSettings = onOpenSettings,
-                modifier = Modifier.align(Alignment.TopStart),
-            )
         }
+
+        HomeHeader(
+            accent = accent,
+            metrics = metrics,
+            activeTab = activeTab,
+            onTabFocused = { activeTab = it },
+            gearFocus = gearFocus,
+            navHomeFocus = navHomeFocus,
+            downFocus = belowHeaderFocus.takeIf { hasContent && activeTab == Tab.Home },
+            onOpenSettings = onOpenSettings,
+            modifier = Modifier.align(Alignment.TopStart),
+        )
     }
 }
 
 @Composable
 private fun HomeHeader(
     accent: Color,
+    metrics: Metrics,
     activeTab: Tab,
     onTabFocused: (Tab) -> Unit,
     gearFocus: FocusRequester,
@@ -192,7 +193,7 @@ private fun HomeHeader(
         modifier = modifier
             .fillMaxWidth()
             .background(Brush.verticalGradient(listOf(Color(0xCC000000), Color.Transparent)))
-            .padding(horizontal = 40.dp, vertical = 14.dp),
+            .padding(horizontal = metrics.gutter, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(modifier = Modifier.height(26.dp)) {
@@ -228,19 +229,19 @@ private fun HomeHeader(
         Spacer(Modifier.width(10.dp))
         DecorCircle(Icons.Filled.NotificationsNone)
         Spacer(Modifier.width(10.dp))
-        FocusableBox(
+        Focusable(
             onClick = onOpenSettings,
             modifier = Modifier.focusRequester(gearFocus).then(downMod),
-        ) { focused ->
+        ) { highlighted ->
             Box(
                 modifier = Modifier
                     .size(38.dp)
                     .clip(CircleShape)
-                    .background(if (focused) accent else Color(0x17FFFFFF))
-                    .then(if (focused) Modifier.border(2.dp, Color.White, CircleShape) else Modifier),
+                    .background(if (highlighted) accent else Color(0x17FFFFFF))
+                    .then(if (highlighted) Modifier.border(2.dp, Color.White, CircleShape) else Modifier),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(Icons.Filled.Settings, contentDescription = "Ajustes", tint = if (focused) Color.Black else Color.White, modifier = Modifier.size(18.dp))
+                Icon(Icons.Filled.Settings, contentDescription = "Ajustes", tint = if (highlighted) Color.Black else Color.White, modifier = Modifier.size(18.dp))
             }
         }
     }
@@ -248,18 +249,18 @@ private fun HomeHeader(
 
 @Composable
 private fun NavPill(label: String, active: Boolean, accent: Color, onFocused: () -> Unit, modifier: Modifier = Modifier) {
-    FocusableBox(onClick = onFocused, modifier = modifier.onFocusChanged { if (it.isFocused) onFocused() }) { focused ->
+    Focusable(onClick = onFocused, modifier = modifier.onFocusChanged { if (it.isFocused) onFocused() }) { highlighted ->
         Box(
             modifier = Modifier
                 .clip(RoundedCornerShape(50))
-                .background(if (active) accent else if (focused) Color(0x24FFFFFF) else Color.Transparent)
-                .then(if (focused) Modifier.border(2.dp, Color.White, RoundedCornerShape(50)) else Modifier)
+                .background(if (active) accent else if (highlighted) Color(0x24FFFFFF) else Color.Transparent)
+                .then(if (highlighted) Modifier.border(2.dp, Color.White, RoundedCornerShape(50)) else Modifier)
                 .padding(horizontal = 18.dp, vertical = 7.dp),
         ) {
             Text(
                 label,
-                color = if (active) Color.Black else if (focused) Color.White else Color(0x8CFFFFFF),
-                fontSize = 13.sp,
+                color = if (active) Color.Black else if (highlighted) Color.White else Color(0x8CFFFFFF),
+                fontSize = MaterialTheme.typography.labelLarge.fontSize,
                 fontWeight = FontWeight.SemiBold,
             )
         }
@@ -281,11 +282,13 @@ private fun HomeHero(
     card: HomeCard,
     height: Dp,
     accent: Color,
+    metrics: Metrics,
     playFocus: FocusRequester,
     upFocus: FocusRequester,
     downFocus: FocusRequester,
     onPlay: () -> Unit,
 ) {
+    val device = LocalDevice.current
     // heightIn(min): la caja crece si el contenido es más alto que `height`,
     // así el texto nunca se desborda hacia arriba tapándose con el header.
     Box(modifier = Modifier.fillMaxWidth().heightIn(min = height)) {
@@ -301,8 +304,8 @@ private fun HomeHero(
         Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)
-                .padding(start = 48.dp, end = 48.dp, bottom = 18.dp)
-                .widthIn(max = 640.dp),
+                .padding(start = metrics.gutter, end = metrics.gutter, bottom = 18.dp)
+                .widthIn(max = metrics.heroTextMaxWidth),
         ) {
             card.kicker?.let {
                 Text(it + "  ·  RECIÉN AÑADIDO", color = accent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
@@ -313,10 +316,10 @@ private fun HomeHero(
                     model = card.logoUrl,
                     contentDescription = card.title,
                     contentScale = ContentScale.Fit,
-                    modifier = Modifier.heightIn(max = 100.dp).widthIn(max = 440.dp),
+                    modifier = Modifier.heightIn(max = 100.dp).widthIn(max = metrics.heroTextMaxWidth),
                 )
             } else {
-                Text(card.title, color = Color.White, fontSize = 40.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(card.title, color = Color.White, fontSize = metrics.heroTitleSize, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
             card.rating?.let {
                 Spacer(Modifier.height(12.dp))
@@ -328,21 +331,21 @@ private fun HomeHero(
             }
             card.overview?.let {
                 Spacer(Modifier.height(12.dp))
-                Text(it, color = Color(0xCCFFFFFF), fontSize = 15.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(it, color = Color(0xCCFFFFFF), fontSize = 15.sp, maxLines = metrics.heroOverviewLines, overflow = TextOverflow.Ellipsis)
             }
             Spacer(Modifier.height(18.dp))
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                FocusableBox(
+                Focusable(
                     onClick = onPlay,
                     modifier = Modifier
                         .focusRequester(playFocus)
-                        .focusProperties { up = upFocus; down = downFocus },
-                ) { focused ->
+                        .then(if (device.isTv) Modifier.focusProperties { up = upFocus; down = downFocus } else Modifier),
+                ) { highlighted ->
                     Row(
                         modifier = Modifier
                             .clip(RoundedCornerShape(50))
                             .background(Color.White)
-                            .then(if (focused) Modifier.border(3.dp, accent, RoundedCornerShape(50)) else Modifier)
+                            .then(if (highlighted) Modifier.border(3.dp, accent, RoundedCornerShape(50)) else Modifier)
                             .padding(horizontal = 26.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -365,6 +368,7 @@ private fun HomeHero(
 @Composable
 private fun RowSection(
     row: HomeRow,
+    metrics: Metrics,
     onCardClick: (HomeCard) -> Unit,
     onCardFocused: (HomeCard) -> Unit,
     firstCardFocus: FocusRequester?,
@@ -373,13 +377,14 @@ private fun RowSection(
     Column {
         Text(
             text = row.title,
-            style = MaterialTheme.typography.titleLarge,
+            fontSize = metrics.sectionTitleSize,
+            fontWeight = FontWeight.Bold,
             color = Color.White,
-            modifier = Modifier.padding(start = 40.dp, bottom = 12.dp),
+            modifier = Modifier.padding(start = metrics.gutter, bottom = 12.dp),
         )
         LazyRow(
-            contentPadding = PaddingValues(horizontal = 40.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
+            contentPadding = PaddingValues(horizontal = metrics.gutter),
+            horizontalArrangement = Arrangement.spacedBy(metrics.cardSpacing),
         ) {
             val firstCardId = row.cards.first().id
             items(row.cards, key = { it.id }) { card ->
@@ -387,6 +392,7 @@ private fun RowSection(
                 MediaCard(
                     card = card,
                     portrait = row.portrait,
+                    metrics = metrics,
                     onClick = { onCardClick(card) },
                     onFocused = { onCardFocused(card) },
                     focusRequester = firstCardFocus?.takeIf { isFirst },
@@ -401,25 +407,33 @@ private fun RowSection(
 private fun MediaCard(
     card: HomeCard,
     portrait: Boolean,
+    metrics: Metrics,
     onClick: () -> Unit,
     onFocused: () -> Unit,
     focusRequester: FocusRequester?,
     upTarget: FocusRequester?,
 ) {
+    val device = LocalDevice.current
     val accent = LocalAccent.current
-    val cardWidth = if (portrait) 130.dp else 250.dp
+    val cardWidth = if (portrait) metrics.portraitCardWidth else metrics.landscapeCardWidth
     val ratio = if (portrait) 2f / 3f else 16f / 9f
 
     Column(modifier = Modifier.width(cardWidth)) {
-        Card(
+        Focusable(
             onClick = onClick,
             modifier = Modifier
                 .fillMaxWidth()
                 .onFocusChanged { if (it.isFocused) onFocused() }
                 .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
-                .then(if (upTarget != null) Modifier.focusProperties { up = upTarget } else Modifier),
-        ) {
-            Box(modifier = Modifier.fillMaxWidth().aspectRatio(ratio)) {
+                .then(if (upTarget != null && device.isTv) Modifier.focusProperties { up = upTarget } else Modifier),
+        ) { highlighted ->
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(ratio)
+                    .clip(RoundedCornerShape(6.dp))
+                    .then(if (highlighted) Modifier.border(3.dp, Color.White, RoundedCornerShape(6.dp)) else Modifier),
+            ) {
                 AsyncImage(
                     model = card.imageUrl,
                     contentDescription = card.title,
@@ -442,19 +456,6 @@ private fun MediaCard(
         card.subtitle?.let {
             Text(it, style = MaterialTheme.typography.bodySmall, color = Color(0xFFB8B8B8), maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-    }
-}
-
-@Composable
-private fun FocusableBox(
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    content: @Composable (focused: Boolean) -> Unit,
-) {
-    val interaction = remember { MutableInteractionSource() }
-    val focused by interaction.collectIsFocusedAsState()
-    Box(modifier = modifier.clickable(interactionSource = interaction, indication = null, onClick = onClick)) {
-        content(focused)
     }
 }
 

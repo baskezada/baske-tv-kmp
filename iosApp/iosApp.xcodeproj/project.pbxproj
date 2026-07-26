@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		A6657508FAAB4DE29C97CA85 /* VLCKit in Frameworks */ = {isa = PBXBuildFile; productRef = B45FF7A1D2C54FC887FCF58B /* VLCKit */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		B56BAE97957316530E320AAA /* BaskeTV.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BaskeTV.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -41,6 +45,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A6657508FAAB4DE29C97CA85 /* VLCKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -85,6 +90,7 @@
 			);
 			name = iosApp;
 			packageProductDependencies = (
+				B45FF7A1D2C54FC887FCF58B /* VLCKit */,
 			);
 			productName = iosApp;
 			productReference = B56BAE97957316530E320AAA /* BaskeTV.app */;
@@ -114,6 +120,9 @@
 			);
 			mainGroup = 03A003419C31D4ECF7D4C08D;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				8497379226744EE58F4DAE5F /* XCRemoteSwiftPackageReference "VLCKit" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = C2274C317815B13A9BD69530 /* Products */;
 			projectDirPath = "";
@@ -301,6 +310,10 @@
 				DEVELOPMENT_ASSET_PATHS = "\"iosApp/Preview Content\"";
 				DEVELOPMENT_TEAM = "${TEAM_ID}";
 				ENABLE_PREVIEWS = YES;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = iosApp/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -329,6 +342,10 @@
 				DEVELOPMENT_ASSET_PATHS = "\"iosApp/Preview Content\"";
 				DEVELOPMENT_TEAM = "${TEAM_ID}";
 				ENABLE_PREVIEWS = YES;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = iosApp/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -368,6 +385,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		8497379226744EE58F4DAE5F /* XCRemoteSwiftPackageReference "VLCKit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://code.videolan.org/videolan/VLCKit";
+			requirement = {
+				kind = exactVersion;
+				version = "4.0.0-a22";
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		B45FF7A1D2C54FC887FCF58B /* VLCKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 8497379226744EE58F4DAE5F /* XCRemoteSwiftPackageReference "VLCKit" */;
+			productName = VLCKit;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 6C050A2BF7119205BFC6156C /* Project object */;
 }

@@ -3,9 +3,6 @@ package cl.baske.tv.ui.settings
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -40,6 +37,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import cl.baske.tv.data.AuthRepository
 import cl.baske.tv.data.HomeMode
 import cl.baske.tv.data.PrefsStore
+import cl.baske.tv.ui.platform.Focusable
+import cl.baske.tv.ui.platform.LocalDevice
+import cl.baske.tv.ui.platform.requestIfTv
 import cl.baske.tv.ui.theme.ACCENT_PRESETS
 import org.koin.compose.koinInject
 
@@ -49,16 +49,17 @@ fun SettingsScreen(onBack: () -> Unit) {
     val authRepository = koinInject<AuthRepository>()
     val prefs by prefsStore.prefs.collectAsStateWithLifecycle()
     val firstFocus = remember { FocusRequester() }
+    val device = LocalDevice.current
 
     BackHandler { onBack() }
-    LaunchedEffect(Unit) { runCatching { firstFocus.requestFocus() } }
+    LaunchedEffect(Unit) { firstFocus.requestIfTv(device) }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(Color(0xFF080808))
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 48.dp, vertical = 40.dp),
+            .padding(horizontal = device.metrics.gutter, vertical = 40.dp),
     ) {
         Text("Ajustes", color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(32.dp))
@@ -157,20 +158,4 @@ private fun SectionLabel(text: String) {
         fontWeight = FontWeight.Bold,
         modifier = Modifier.padding(bottom = 14.dp),
     )
-}
-
-/** Wrapper enfocable por D-pad; expone si está enfocado para pintar el anillo. */
-@Composable
-private fun Focusable(
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    content: @Composable (focused: Boolean) -> Unit,
-) {
-    val interaction = remember { MutableInteractionSource() }
-    val focused by interaction.collectIsFocusedAsState()
-    Box(
-        modifier = modifier.clickable(interactionSource = interaction, indication = null, onClick = onClick),
-    ) {
-        content(focused)
-    }
 }

@@ -17,6 +17,8 @@ import cl.baske.tv.ui.home.HomeCard
 import cl.baske.tv.ui.home.HomeScreen
 import cl.baske.tv.ui.home.NavTarget
 import cl.baske.tv.ui.library.LibraryScreen
+import cl.baske.tv.ui.platform.LocalDevice
+import cl.baske.tv.ui.platform.rememberDevice
 import cl.baske.tv.ui.player.PlayerScreen
 import cl.baske.tv.ui.settings.SettingsScreen
 import cl.baske.tv.ui.theme.BaskeTheme
@@ -50,7 +52,10 @@ fun RootApp() {
     }
 
     BaskeTheme {
-        CompositionLocalProvider(LocalAccent provides Color(prefs.accentColor)) {
+        CompositionLocalProvider(
+            LocalAccent provides Color(prefs.accentColor),
+            LocalDevice provides rememberDevice(),
+        ) {
             when {
                 session == null -> ConnectScreen()
                 playingItemId != null -> PlayerScreen(

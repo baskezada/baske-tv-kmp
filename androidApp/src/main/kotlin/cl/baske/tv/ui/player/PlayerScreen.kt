@@ -8,7 +8,9 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -38,11 +40,14 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -68,6 +73,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import cl.baske.tv.ui.platform.LocalDevice
 import cl.baske.tv.ui.theme.LocalAccent
 import kotlinx.coroutines.delay
 import org.koin.androidx.compose.koinViewModel
@@ -93,11 +99,17 @@ private val NAV_KEYS = setOf(
     Key.MediaPlayPause, Key.MediaPlay, Key.MediaPause, Key.MediaFastForward, Key.MediaRewind,
 )
 
+/**
+ * Reproducción y su estado viven acá, agnósticos del tipo de input. Lo único
+ * que cambia entre Tv y touch es el overlay de controles (`TvPlayerOverlay` /
+ * `TouchPlayerOverlay`), que se le pega encima llamando a las mismas acciones.
+ */
 @Composable
 fun PlayerScreen(itemId: String, onExit: () -> Unit) {
     val viewModel = koinViewModel<PlayerViewModel>(key = itemId) { parametersOf(itemId) }
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val device = LocalDevice.current
 
     val libVlc = remember {
         LibVLC(context, arrayListOf("--no-drop-late-frames", "--no-skip-frames"))
@@ -107,11 +119,6 @@ fun PlayerScreen(itemId: String, onExit: () -> Unit) {
     var isPlaying by remember { mutableStateOf(true) }
     var positionMs by remember { mutableLongStateOf(0L) }
     var durationMs by remember { mutableLongStateOf(0L) }
-    var zone by remember { mutableStateOf(Zone.Buttons) }
-    var interactionTick by remember { mutableIntStateOf(0) }
-    var selectedIndex by remember { mutableIntStateOf(1) }
-    var openPanel by remember { mutableStateOf<Panel?>(null) }
-    var panelCursor by remember { mutableIntStateOf(0) }
     var startReported by remember { mutableStateOf(false) }
     var resumeSeeked by remember { mutableStateOf(false) }
     var subtitleAdded by remember { mutableStateOf(false) }
@@ -127,7 +134,6 @@ fun PlayerScreen(itemId: String, onExit: () -> Unit) {
             if (state.subtitles.isNotEmpty()) add(Transport.Subtitles)
         }
     }
-    val focus = remember { FocusRequester() }
 
     LaunchedEffect(state.streamUrl) {
         val url = state.streamUrl ?: return@LaunchedEffect
@@ -192,21 +198,6 @@ fun PlayerScreen(itemId: String, onExit: () -> Unit) {
         }
     }
 
-    // Auto-ocultar; no oculta mientras hay un panel abierto.
-    LaunchedEffect(interactionTick) {
-        delay(CONTROLS_TIMEOUT_MS)
-        if (openPanel == null) zone = Zone.None
-    }
-
-    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
-    BackHandler {
-        when {
-            openPanel != null -> openPanel = null
-            zone != Zone.None -> zone = Zone.None
-            else -> onExit()
-        }
-    }
-
     DisposableEffect(Unit) {
         onDispose {
             val finalMs = mediaPlayer.time
@@ -222,6 +213,13 @@ fun PlayerScreen(itemId: String, onExit: () -> Unit) {
     fun seekBy(deltaMs: Long) {
         val len = mediaPlayer.length
         val target = (mediaPlayer.time + deltaMs).coerceIn(0L, if (len > 0) len else Long.MAX_VALUE)
+        mediaPlayer.time = target
+        positionMs = target
+    }
+    fun seekToFraction(fraction: Float) {
+        val len = mediaPlayer.length
+        if (len <= 0) return
+        val target = (fraction * len).toLong().coerceIn(0L, len)
         mediaPlayer.time = target
         positionMs = target
     }
@@ -249,95 +247,8 @@ fun PlayerScreen(itemId: String, onExit: () -> Unit) {
         state.subtitles.forEach { t -> add(PanelItem(t.label, currentSubUrl == t.url) { selectSubtitleUrl(t.url) }) }
     }
 
-    val panelItems: List<PanelItem> = when (openPanel) {
-        Panel.Audio -> audioItems()
-        Panel.Subtitles -> subtitleItems()
-        null -> emptyList()
-    }
-
-    fun activate(t: Transport) {
-        when (t) {
-            Transport.SeekBack -> seekBy(-SEEK_STEP_MS)
-            Transport.PlayPause -> togglePlayPause()
-            Transport.SeekFwd -> seekBy(SEEK_STEP_MS)
-            Transport.Audio -> { openPanel = Panel.Audio; panelCursor = 0 }
-            Transport.Subtitles -> { openPanel = Panel.Subtitles; panelCursor = 0 }
-        }
-    }
-
-    fun handleKeyUp(key: Key): Boolean {
-        interactionTick++
-        // Panel abierto: navegación propia.
-        if (openPanel != null) {
-            val last = (panelItems.size - 1).coerceAtLeast(0)
-            when {
-                key == Key.DirectionUp -> panelCursor = (panelCursor - 1).coerceAtLeast(0)
-                key == Key.DirectionDown -> panelCursor = (panelCursor + 1).coerceAtMost(last)
-                key == Key.DirectionCenter || key == Key.Enter || key == Key.Spacebar -> {
-                    panelItems.getOrNull(panelCursor)?.onSelect(); openPanel = null
-                }
-                key == Key.DirectionLeft -> openPanel = null
-            }
-            return true
-        }
-        when (key) {
-            Key.MediaPlayPause -> { togglePlayPause(); return true }
-            Key.MediaPlay -> { mediaPlayer.play(); return true }
-            Key.MediaPause -> { mediaPlayer.pause(); return true }
-            Key.MediaFastForward -> { seekBy(SEEK_STEP_MS); zone = Zone.Seek; return true }
-            Key.MediaRewind -> { seekBy(-SEEK_STEP_MS); zone = Zone.Seek; return true }
-            else -> {}
-        }
-        val center = key == Key.DirectionCenter || key == Key.Enter || key == Key.Spacebar
-        when (zone) {
-            Zone.None -> when {
-                key == Key.DirectionUp || key == Key.DirectionDown -> zone = Zone.Buttons
-                key == Key.DirectionLeft -> { seekBy(-SEEK_STEP_MS); zone = Zone.Seek }
-                key == Key.DirectionRight -> { seekBy(SEEK_STEP_MS); zone = Zone.Seek }
-                center -> { togglePlayPause(); zone = Zone.Buttons }
-            }
-            Zone.Buttons -> when {
-                key == Key.DirectionUp -> zone = Zone.Seek
-                key == Key.DirectionDown -> zone = Zone.None
-                key == Key.DirectionLeft -> selectedIndex = (selectedIndex - 1).coerceAtLeast(0)
-                key == Key.DirectionRight -> selectedIndex = (selectedIndex + 1).coerceAtMost(controls.lastIndex)
-                center -> activate(controls[selectedIndex])
-            }
-            Zone.Seek -> when {
-                key == Key.DirectionUp -> zone = Zone.Title
-                key == Key.DirectionDown -> zone = Zone.Buttons
-                key == Key.DirectionLeft -> seekBy(-SEEK_STEP_MS)
-                key == Key.DirectionRight -> seekBy(SEEK_STEP_MS)
-                center -> zone = Zone.Buttons
-            }
-            Zone.Title -> when {
-                key == Key.DirectionUp -> zone = Zone.Back
-                key == Key.DirectionDown -> zone = Zone.Seek
-            }
-            Zone.Back -> when {
-                key == Key.DirectionDown -> zone = Zone.Title
-                center -> onExit()
-            }
-        }
-        return true
-    }
-
-    val controlsVisible = zone != Zone.None || openPanel != null
-
     Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black)
-            .focusRequester(focus)
-            .focusable()
-            .onKeyEvent { event ->
-                if (event.key !in NAV_KEYS) return@onKeyEvent false
-                when (event.type) {
-                    KeyEventType.KeyDown -> true
-                    KeyEventType.KeyUp -> handleKeyUp(event.key)
-                    else -> false
-                }
-            },
+        modifier = Modifier.fillMaxSize().background(Color.Black),
     ) {
         AndroidView(
             factory = { ctx ->
@@ -363,6 +274,167 @@ fun PlayerScreen(itemId: String, onExit: () -> Unit) {
             }
         }
 
+        if (device.isTv) {
+            TvPlayerOverlay(
+                title = state.title,
+                isPlaying = isPlaying,
+                positionMs = positionMs,
+                durationMs = durationMs,
+                controls = controls,
+                subsOn = currentSubUrl != null,
+                onTogglePlayPause = ::togglePlayPause,
+                onPlay = mediaPlayer::play,
+                onPause = mediaPlayer::pause,
+                onSeekBy = ::seekBy,
+                audioItems = ::audioItems,
+                subtitleItems = ::subtitleItems,
+                onExit = onExit,
+            )
+        } else {
+            TouchPlayerOverlay(
+                title = state.title,
+                isPlaying = isPlaying,
+                positionMs = positionMs,
+                durationMs = durationMs,
+                subsOn = currentSubUrl != null,
+                hasSubtitles = state.subtitles.isNotEmpty(),
+                onTogglePlayPause = ::togglePlayPause,
+                onSeekBy = ::seekBy,
+                onSeekToFraction = ::seekToFraction,
+                audioItems = ::audioItems,
+                subtitleItems = ::subtitleItems,
+                onExit = onExit,
+            )
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Overlay Tv: D-pad puro, sin puntero. El estado de foco/zona vive acá.
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun TvPlayerOverlay(
+    title: String,
+    isPlaying: Boolean,
+    positionMs: Long,
+    durationMs: Long,
+    controls: List<Transport>,
+    subsOn: Boolean,
+    onTogglePlayPause: () -> Unit,
+    onPlay: () -> Unit,
+    onPause: () -> Unit,
+    onSeekBy: (Long) -> Unit,
+    audioItems: () -> List<PanelItem>,
+    subtitleItems: () -> List<PanelItem>,
+    onExit: () -> Unit,
+) {
+    var zone by remember { mutableStateOf(Zone.Buttons) }
+    var interactionTick by remember { mutableIntStateOf(0) }
+    var selectedIndex by remember { mutableIntStateOf(1) }
+    var openPanel by remember { mutableStateOf<Panel?>(null) }
+    var panelCursor by remember { mutableIntStateOf(0) }
+    val focus = remember { FocusRequester() }
+
+    val panelItems: List<PanelItem> = when (openPanel) {
+        Panel.Audio -> audioItems()
+        Panel.Subtitles -> subtitleItems()
+        null -> emptyList()
+    }
+
+    // Auto-ocultar; no oculta mientras hay un panel abierto.
+    LaunchedEffect(interactionTick) {
+        delay(CONTROLS_TIMEOUT_MS)
+        if (openPanel == null) zone = Zone.None
+    }
+    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
+    BackHandler {
+        when {
+            openPanel != null -> openPanel = null
+            zone != Zone.None -> zone = Zone.None
+            else -> onExit()
+        }
+    }
+
+    fun handleKeyUp(key: Key): Boolean {
+        interactionTick++
+        // Panel abierto: navegación propia.
+        if (openPanel != null) {
+            val last = (panelItems.size - 1).coerceAtLeast(0)
+            when {
+                key == Key.DirectionUp -> panelCursor = (panelCursor - 1).coerceAtLeast(0)
+                key == Key.DirectionDown -> panelCursor = (panelCursor + 1).coerceAtMost(last)
+                key == Key.DirectionCenter || key == Key.Enter || key == Key.Spacebar -> {
+                    panelItems.getOrNull(panelCursor)?.onSelect(); openPanel = null
+                }
+                key == Key.DirectionLeft -> openPanel = null
+            }
+            return true
+        }
+        when (key) {
+            Key.MediaPlayPause -> { onTogglePlayPause(); return true }
+            Key.MediaPlay -> { onPlay(); return true }
+            Key.MediaPause -> { onPause(); return true }
+            Key.MediaFastForward -> { onSeekBy(SEEK_STEP_MS); zone = Zone.Seek; return true }
+            Key.MediaRewind -> { onSeekBy(-SEEK_STEP_MS); zone = Zone.Seek; return true }
+            else -> {}
+        }
+        val center = key == Key.DirectionCenter || key == Key.Enter || key == Key.Spacebar
+        when (zone) {
+            Zone.None -> when {
+                key == Key.DirectionUp || key == Key.DirectionDown -> zone = Zone.Buttons
+                key == Key.DirectionLeft -> { onSeekBy(-SEEK_STEP_MS); zone = Zone.Seek }
+                key == Key.DirectionRight -> { onSeekBy(SEEK_STEP_MS); zone = Zone.Seek }
+                center -> { onTogglePlayPause(); zone = Zone.Buttons }
+            }
+            Zone.Buttons -> when {
+                key == Key.DirectionUp -> zone = Zone.Seek
+                key == Key.DirectionDown -> zone = Zone.None
+                key == Key.DirectionLeft -> selectedIndex = (selectedIndex - 1).coerceAtLeast(0)
+                key == Key.DirectionRight -> selectedIndex = (selectedIndex + 1).coerceAtMost(controls.lastIndex)
+                center -> when (controls[selectedIndex]) {
+                    Transport.SeekBack -> onSeekBy(-SEEK_STEP_MS)
+                    Transport.PlayPause -> onTogglePlayPause()
+                    Transport.SeekFwd -> onSeekBy(SEEK_STEP_MS)
+                    Transport.Audio -> { openPanel = Panel.Audio; panelCursor = 0 }
+                    Transport.Subtitles -> { openPanel = Panel.Subtitles; panelCursor = 0 }
+                }
+            }
+            Zone.Seek -> when {
+                key == Key.DirectionUp -> zone = Zone.Title
+                key == Key.DirectionDown -> zone = Zone.Buttons
+                key == Key.DirectionLeft -> onSeekBy(-SEEK_STEP_MS)
+                key == Key.DirectionRight -> onSeekBy(SEEK_STEP_MS)
+                center -> zone = Zone.Buttons
+            }
+            Zone.Title -> when {
+                key == Key.DirectionUp -> zone = Zone.Back
+                key == Key.DirectionDown -> zone = Zone.Seek
+            }
+            Zone.Back -> when {
+                key == Key.DirectionDown -> zone = Zone.Title
+                center -> onExit()
+            }
+        }
+        return true
+    }
+
+    val controlsVisible = zone != Zone.None || openPanel != null
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .focusRequester(focus)
+            .focusable()
+            .onKeyEvent { event ->
+                if (event.key !in NAV_KEYS) return@onKeyEvent false
+                when (event.type) {
+                    KeyEventType.KeyDown -> true
+                    KeyEventType.KeyUp -> handleKeyUp(event.key)
+                    else -> false
+                }
+            },
+    ) {
         AnimatedVisibility(
             visible = controlsVisible, enter = fadeIn(), exit = fadeOut(),
             modifier = Modifier.align(Alignment.TopStart),
@@ -382,18 +454,17 @@ fun PlayerScreen(itemId: String, onExit: () -> Unit) {
             modifier = Modifier.align(Alignment.BottomStart),
         ) {
             PlayerControls(
-                title = state.title,
+                title = title,
                 isPlaying = isPlaying,
                 positionMs = positionMs,
                 durationMs = durationMs,
                 controls = controls,
                 selectedIndex = selectedIndex,
-                subsOn = currentSubUrl != null,
+                subsOn = subsOn,
                 zone = zone,
             )
         }
 
-        // Panel flotante (Audio / Subtítulos)
         openPanel?.let { panel ->
             PlayerPanel(
                 title = if (panel == Panel.Audio) "Audio" else "Subtítulos",
@@ -402,6 +473,163 @@ fun PlayerScreen(itemId: String, onExit: () -> Unit) {
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(end = 32.dp, bottom = 150.dp),
+            )
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Overlay touch: tap para mostrar/ocultar, botones y slider arrastrable.
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun TouchPlayerOverlay(
+    title: String,
+    isPlaying: Boolean,
+    positionMs: Long,
+    durationMs: Long,
+    subsOn: Boolean,
+    hasSubtitles: Boolean,
+    onTogglePlayPause: () -> Unit,
+    onSeekBy: (Long) -> Unit,
+    onSeekToFraction: (Float) -> Unit,
+    audioItems: () -> List<PanelItem>,
+    subtitleItems: () -> List<PanelItem>,
+    onExit: () -> Unit,
+) {
+    var controlsVisible by remember { mutableStateOf(true) }
+    var openPanel by remember { mutableStateOf<Panel?>(null) }
+    var interactionTick by remember { mutableIntStateOf(0) }
+    var scrubbing by remember { mutableStateOf(false) }
+    var scrubFraction by remember { mutableFloatStateOf(0f) }
+
+    LaunchedEffect(interactionTick, controlsVisible, scrubbing) {
+        if (controlsVisible && openPanel == null && !scrubbing) {
+            delay(CONTROLS_TIMEOUT_MS)
+            controlsVisible = false
+        }
+    }
+    BackHandler {
+        when {
+            openPanel != null -> openPanel = null
+            else -> onExit()
+        }
+    }
+
+    val panelItems: List<PanelItem> = when (openPanel) {
+        Panel.Audio -> audioItems()
+        Panel.Subtitles -> subtitleItems()
+        null -> emptyList()
+    }
+    val fraction = if (durationMs > 0) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+            ) {
+                controlsVisible = !controlsVisible
+                interactionTick++
+            },
+    ) {
+        AnimatedVisibility(
+            visible = controlsVisible, enter = fadeIn(), exit = fadeOut(),
+            modifier = Modifier.align(Alignment.TopStart),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Brush.verticalGradient(listOf(Color(0xC2000000), Color.Transparent)))
+                    .padding(horizontal = 20.dp, vertical = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(Color(0x33FFFFFF))
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = onExit,
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Volver", tint = Color.White, modifier = Modifier.size(18.dp))
+                }
+                Spacer(Modifier.width(14.dp))
+                Text(title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp, maxLines = 1)
+            }
+        }
+
+        AnimatedVisibility(
+            visible = controlsVisible, enter = fadeIn(), exit = fadeOut(),
+            modifier = Modifier.align(Alignment.BottomStart),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xE6000000))))
+                    .padding(start = 20.dp, end = 20.dp, top = 60.dp, bottom = 24.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(formatTime(positionMs), color = Color.White, fontSize = 12.sp)
+                    Slider(
+                        value = if (scrubbing) scrubFraction else fraction,
+                        onValueChange = {
+                            scrubbing = true
+                            scrubFraction = it
+                            interactionTick++
+                        },
+                        onValueChangeFinished = {
+                            onSeekToFraction(scrubFraction)
+                            scrubbing = false
+                            interactionTick++
+                        },
+                        colors = SliderDefaults.colors(
+                            thumbColor = LocalAccent.current,
+                            activeTrackColor = LocalAccent.current,
+                            inactiveTrackColor = Color(0x2EFFFFFF),
+                        ),
+                        modifier = Modifier.weight(1f).padding(horizontal = 10.dp),
+                    )
+                    Text(formatTime(durationMs), color = Color(0xB3FFFFFF), fontSize = 12.sp)
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    TransportButton(Icons.Filled.Replay10, selected = false, onClick = { onSeekBy(-SEEK_STEP_MS); interactionTick++ })
+                    TransportButton(
+                        if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, selected = false, big = true,
+                        onClick = { onTogglePlayPause(); interactionTick++ },
+                    )
+                    TransportButton(Icons.Filled.Forward10, selected = false, onClick = { onSeekBy(SEEK_STEP_MS); interactionTick++ })
+                    Spacer(Modifier.weight(1f))
+                    TransportButton(Icons.Filled.Audiotrack, selected = false, onClick = { openPanel = Panel.Audio; interactionTick++ })
+                    if (hasSubtitles) {
+                        TransportButton(
+                            if (subsOn) Icons.Filled.ClosedCaption else Icons.Filled.ClosedCaptionOff,
+                            selected = false, active = subsOn,
+                            onClick = { openPanel = Panel.Subtitles; interactionTick++ },
+                        )
+                    }
+                }
+            }
+        }
+
+        openPanel?.let { panel ->
+            PlayerPanel(
+                title = if (panel == Panel.Audio) "Audio" else "Subtítulos",
+                items = panelItems,
+                cursor = -1,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 20.dp, bottom = 150.dp),
             )
         }
     }
@@ -530,6 +758,11 @@ private fun PlayerPanel(
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(10.dp))
                         .background(if (isCursor) Color(0x1FFFFFFF) else Color.Transparent)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = item.onSelect,
+                        )
                         .padding(horizontal = 12.dp, vertical = 9.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -560,6 +793,7 @@ private fun TransportButton(
     selected: Boolean,
     big: Boolean = false,
     active: Boolean = false,
+    onClick: (() -> Unit)? = null,
 ) {
     val accent = LocalAccent.current
     val size = if (big) 60.dp else 48.dp
@@ -577,6 +811,15 @@ private fun TransportButton(
             .then(
                 if (selected) Modifier.border(2.dp, Color(0xE6FFFFFF), CircleShape)
                 else Modifier.border(1.dp, Color(0x24FFFFFF), CircleShape),
+            )
+            .then(
+                if (onClick != null) {
+                    Modifier.clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onClick,
+                    )
+                } else Modifier,
             ),
         contentAlignment = Alignment.Center,
     ) {
