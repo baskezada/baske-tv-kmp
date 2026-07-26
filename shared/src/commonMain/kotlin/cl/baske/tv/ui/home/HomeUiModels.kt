@@ -36,5 +36,7 @@ data class HomeRow(
 data class HomeUiState(
     val loading: Boolean = true,
     val rows: List<HomeRow> = emptyList(),
+    /** Ítems destacados que rotan en el banner (como el carrusel del web). */
+    val featured: List<HomeCard> = emptyList(),
     val error: String? = null,
 )

@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -93,25 +94,36 @@ fun HomeScreen(
     val gearFocus = remember { FocusRequester() }
     val heroPlayFocus = remember { FocusRequester() }
     val navHomeFocus = remember { FocusRequester() }
-    var heroCard by remember { mutableStateOf<HomeCard?>(null) }
     var activeTab by remember { mutableStateOf(Tab.Home) }
+    val listState = rememberLazyListState()
+    var heroPlayFocused by remember { mutableStateOf(false) }
+    var heroIndex by remember { mutableStateOf(0) }
+    // Sin scroll manual: el hero + la primera fila entran en pantalla (ver
+    // heroFraction), así el bringIntoView del foco no necesita mover nada al
+    // navegar el banner/Continuar viendo. Recién al bajar a la 2da fila scrollea.
 
     val hasContent = state.rows.isNotEmpty()
-    val featured = state.rows.firstOrNull()?.cards?.firstOrNull()
-    val effectiveHero = when (prefs.homeMode) {
-        // "Vitrina" solo tiene sentido con D-pad (el hero sigue a la card
-        // enfocada); con puntero se comporta igual que "Banner".
-        HomeMode.Vitrina -> if (device.isTv) heroCard ?: featured else featured
-        HomeMode.Banner -> featured
-        HomeMode.SinBanner -> null
-    }
+    val featuredList = state.featured
+    // Clamp por si la lista cambió de tamaño.
+    if (featuredList.isNotEmpty() && heroIndex >= featuredList.size) heroIndex = 0
+    val effectiveHero = if (prefs.homeMode == HomeMode.SinBanner) null else featuredList.getOrNull(heroIndex)
     val hasHero = effectiveHero != null
 
-    // Foco inicial en la primera fila (NO en Reproducir): así al cargar el
-    // hero no se scrollea hacia arriba y el banner se ve completo. Solo aplica
-    // en Tv — con puntero no hay foco que restaurar.
+    // Carrusel: rota los destacados cada 6s. Se pausa solo con el foco en
+    // Reproducir (ahí estás "usando" el banner); en Continuar viendo sigue rotando.
+    LaunchedEffect(featuredList.size, heroPlayFocused) {
+        if (featuredList.size <= 1 || heroPlayFocused) return@LaunchedEffect
+        while (true) {
+            kotlinx.coroutines.delay(6000)
+            heroIndex = (heroIndex + 1) % featuredList.size
+        }
+    }
+
+    // Foco inicial en Reproducir del hero (o la primera card si no hay hero):
+    // como el header ahora vive dentro del scroll, el hero+header entran en
+    // pantalla sin scrollear y el banner se ve completo. Solo en Tv.
     LaunchedEffect(hasContent) {
-        if (hasContent) firstCardFocus.requestIfTv(device)
+        if (hasContent) (if (hasHero) heroPlayFocus else firstCardFocus).requestIfTv(device)
     }
     // Target hacia el que baja el header (Reproducir si hay hero, si no la card).
     val belowHeaderFocus = if (hasHero) heroPlayFocus else firstCardFocus
@@ -119,60 +131,87 @@ fun HomeScreen(
     val firstCardUpTarget = if (hasHero) heroPlayFocus else navHomeFocus
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize().background(Color(0xFF080808))) {
-        val heroHeight = (maxHeight - metrics.headerHeight) * metrics.heroFraction
+        val heroHeight = maxHeight * metrics.heroFraction
+
+        // El header va DENTRO del scroll (no fijo): se oculta al bajar y, cuando
+        // hay hero, se dibuja SOBRE la imagen (full-bleed) como en la web.
+        val header: @Composable (Modifier, FocusRequester?) -> Unit = { mod, down ->
+            HomeHeader(
+                accent = accent,
+                metrics = metrics,
+                activeTab = activeTab,
+                onTabFocused = { activeTab = it },
+                gearFocus = gearFocus,
+                navHomeFocus = navHomeFocus,
+                downFocus = down,
+                onOpenSettings = onOpenSettings,
+                modifier = mod,
+            )
+        }
 
         when {
-            activeTab != Tab.Home -> CenterMessage("Próximamente")
             state.loading && state.rows.isEmpty() -> CenterMessage("Cargando…")
             state.rows.isEmpty() && state.error != null -> CenterMessage(state.error!!)
             else -> {
-                val firstRowId = state.rows.first().id
+                val firstRowId = state.rows.firstOrNull()?.id
                 LazyColumn(
-                    contentPadding = PaddingValues(top = metrics.headerHeight, bottom = 32.dp),
+                    state = listState,
+                    contentPadding = PaddingValues(bottom = 32.dp),
                     verticalArrangement = Arrangement.spacedBy(metrics.rowSpacing),
                 ) {
-                    effectiveHero?.let { hero ->
-                        item(key = "hero") {
-                            HomeHero(
-                                card = hero,
-                                height = heroHeight,
-                                accent = accent,
-                                metrics = metrics,
-                                playFocus = heroPlayFocus,
-                                upFocus = navHomeFocus,
-                                downFocus = firstCardFocus,
-                                onPlay = { onPlayItem(hero) },
-                            )
+                    // El header va SIEMPRE en este item (mismo call-site), así
+                    // cambiar de tab no lo remonta ni le roba el foco. Solo cambia
+                    // lo de abajo: filas (Inicio) o "Próximamente" (TV/Libros).
+                    item(key = "top") {
+                        // El header es un call-site FIJO (no se remonta al cambiar de
+                        // tab, si no perdía el foco). El hero es un sibling condicional
+                        // detrás, SOLO en Home.
+                        val down = belowHeaderFocus.takeIf { hasContent && activeTab == Tab.Home }
+                        Box {
+                            val hero = effectiveHero
+                            if (activeTab == Tab.Home && hero != null) {
+                                HomeHero(
+                                    card = hero,
+                                    height = heroHeight,
+                                    accent = accent,
+                                    metrics = metrics,
+                                    playFocus = heroPlayFocus,
+                                    upFocus = navHomeFocus,
+                                    downFocus = firstCardFocus,
+                                    onPlay = { onPlayItem(hero) },
+                                    onPlayFocused = { heroPlayFocused = it },
+                                    dotCount = featuredList.size,
+                                    dotIndex = heroIndex,
+                                )
+                            }
+                            header(Modifier.align(Alignment.TopStart), down)
                         }
                     }
-                    items(state.rows, key = { it.id }) { row ->
-                        val isFirstRow = row.id == firstRowId
-                        RowSection(
-                            row = row,
-                            metrics = metrics,
-                            onCardClick = onCardClick,
-                            onCardFocused = { card ->
-                                if (prefs.homeMode == HomeMode.Vitrina) heroCard = card
-                            },
-                            firstCardFocus = if (isFirstRow) firstCardFocus else null,
-                            firstCardUp = if (isFirstRow) firstCardUpTarget else null,
-                        )
+                    if (activeTab == Tab.Home) {
+                        items(state.rows, key = { it.id }) { row ->
+                            val isFirstRow = row.id == firstRowId
+                            RowSection(
+                                row = row,
+                                metrics = metrics,
+                                onCardClick = onCardClick,
+                                onCardFocused = { },
+                                firstCardFocus = if (isFirstRow) firstCardFocus else null,
+                                firstCardUp = if (isFirstRow) firstCardUpTarget else null,
+                            )
+                        }
+                    } else {
+                        item(key = "soon") {
+                            Box(
+                                modifier = Modifier.fillMaxWidth().height(360.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text("Próximamente", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
                     }
                 }
             }
         }
-
-        HomeHeader(
-            accent = accent,
-            metrics = metrics,
-            activeTab = activeTab,
-            onTabFocused = { activeTab = it },
-            gearFocus = gearFocus,
-            navHomeFocus = navHomeFocus,
-            downFocus = belowHeaderFocus.takeIf { hasContent && activeTab == Tab.Home },
-            onOpenSettings = onOpenSettings,
-            modifier = Modifier.align(Alignment.TopStart),
-        )
     }
 }
 
@@ -238,7 +277,7 @@ private fun HomeHeader(
                     .size(38.dp)
                     .clip(CircleShape)
                     .background(if (highlighted) accent else Color(0x17FFFFFF))
-                    .then(if (highlighted) Modifier.border(2.dp, Color.White, CircleShape) else Modifier),
+                    .then(if (highlighted) Modifier.border(2.dp, Color(0xB3FFFFFF), CircleShape) else Modifier),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(Icons.Filled.Settings, contentDescription = "Ajustes", tint = if (highlighted) Color.Black else Color.White, modifier = Modifier.size(18.dp))
@@ -254,12 +293,12 @@ private fun NavPill(label: String, active: Boolean, accent: Color, onFocused: ()
             modifier = Modifier
                 .clip(RoundedCornerShape(50))
                 .background(if (active) accent else if (highlighted) Color(0x24FFFFFF) else Color.Transparent)
-                .then(if (highlighted) Modifier.border(2.dp, Color.White, RoundedCornerShape(50)) else Modifier)
+                .then(if (highlighted) Modifier.border(2.dp, Color(0xB3FFFFFF), RoundedCornerShape(50)) else Modifier)
                 .padding(horizontal = 18.dp, vertical = 7.dp),
         ) {
             Text(
                 label,
-                color = if (active) Color.Black else if (highlighted) Color.White else Color(0x8CFFFFFF),
+                color = if (active || highlighted) Color.White else Color(0x8CFFFFFF),
                 fontSize = MaterialTheme.typography.labelLarge.fontSize,
                 fontWeight = FontWeight.SemiBold,
             )
@@ -287,6 +326,9 @@ private fun HomeHero(
     upFocus: FocusRequester,
     downFocus: FocusRequester,
     onPlay: () -> Unit,
+    onPlayFocused: (Boolean) -> Unit = {},
+    dotCount: Int = 0,
+    dotIndex: Int = 0,
 ) {
     val device = LocalDevice.current
     // heightIn(min): la caja crece si el contenido es más alto que `height`,
@@ -311,16 +353,7 @@ private fun HomeHero(
                 Text(it + "  ·  RECIÉN AÑADIDO", color = accent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(10.dp))
             }
-            if (card.logoUrl != null) {
-                AsyncImage(
-                    model = card.logoUrl,
-                    contentDescription = card.title,
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.heightIn(max = 100.dp).widthIn(max = metrics.heroTextMaxWidth),
-                )
-            } else {
-                Text(card.title, color = Color.White, fontSize = metrics.heroTitleSize, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            }
+            Text(card.title, color = Color.White, fontSize = metrics.heroTitleSize, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
             card.rating?.let {
                 Spacer(Modifier.height(12.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -339,6 +372,8 @@ private fun HomeHero(
                     onClick = onPlay,
                     modifier = Modifier
                         .focusRequester(playFocus)
+                        // Al enfocar Reproducir, subir del todo para ver el banner completo.
+                        .onFocusChanged { onPlayFocused(it.isFocused) }
                         .then(if (device.isTv) Modifier.focusProperties { up = upFocus; down = downFocus } else Modifier),
                 ) { highlighted ->
                     Row(
@@ -362,6 +397,28 @@ private fun HomeHero(
                 }
             }
         }
+
+        // Dots del carrusel: abajo a la derecha del banner, a la altura de los botones.
+        if (dotCount > 1) {
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = metrics.gutter, bottom = 36.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                repeat(dotCount) { i ->
+                    val activeDot = i == dotIndex
+                    Box(
+                        modifier = Modifier
+                            .height(6.dp)
+                            .width(if (activeDot) 22.dp else 6.dp)
+                            .clip(RoundedCornerShape(3.dp))
+                            .background(if (activeDot) Color.White else Color(0x55FFFFFF)),
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -373,8 +430,9 @@ private fun RowSection(
     onCardFocused: (HomeCard) -> Unit,
     firstCardFocus: FocusRequester?,
     firstCardUp: FocusRequester?,
+    onFocusChanged: (Boolean) -> Unit = {},
 ) {
-    Column {
+    Column(modifier = Modifier.onFocusChanged { onFocusChanged(it.hasFocus) }) {
         Text(
             text = row.title,
             fontSize = metrics.sectionTitleSize,

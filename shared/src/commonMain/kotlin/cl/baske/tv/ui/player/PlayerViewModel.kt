@@ -6,6 +6,7 @@ import cl.baske.tv.data.SessionStore
 import cl.baske.tv.data.model.MediaStream
 import cl.baske.tv.data.model.PlaybackReport
 import cl.baske.tv.data.remote.EmbyApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -52,9 +53,12 @@ class PlayerViewModel(
             return
         }
         viewModelScope.launch {
-            // Detalle (título + posición de resume) y PlaybackInfo en secuencia.
-            val item = runCatching { api.getItem(session.userId, itemId) }.getOrNull()
-            val playbackInfo = runCatching { api.getPlaybackInfo(itemId, session.userId) }.getOrNull()
+            // Detalle (título + posición de resume) y PlaybackInfo EN PARALELO
+            // para arrancar la reproducción antes.
+            val itemDeferred = async { runCatching { api.getItem(session.userId, itemId) }.getOrNull() }
+            val playbackDeferred = async { runCatching { api.getPlaybackInfo(itemId, session.userId) }.getOrNull() }
+            val item = itemDeferred.await()
+            val playbackInfo = playbackDeferred.await()
             val source = playbackInfo?.mediaSources?.firstOrNull()
 
             if (source == null) {

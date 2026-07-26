@@ -35,20 +35,24 @@ class HomeViewModel(
 
         _state.update { it.copy(loading = true, error = null) }
         viewModelScope.launch {
-            val rows = buildHome(userId, serverUrl, fresh)
+            val content = buildHome(userId, serverUrl, fresh)
             _state.value = HomeUiState(
                 loading = false,
-                rows = rows,
-                error = if (rows.isEmpty()) "No se pudo cargar el inicio" else null,
+                rows = content.rows,
+                featured = content.featured,
+                error = if (content.rows.isEmpty()) "No se pudo cargar el inicio" else null,
             )
         }
     }
 
+    private data class HomeContent(val rows: List<HomeRow>, val featured: List<HomeCard>)
+
     /**
      * Orden del web: Continuar viendo → Vistas → "Recién añadido en {biblioteca}"
-     * (una fila por biblioteca de video).
+     * (una fila por biblioteca de video). `featured` = los 6 recién agregados
+     * más nuevos, que rotan en el banner.
      */
-    private suspend fun buildHome(userId: String, serverUrl: String, fresh: Boolean): List<HomeRow> = coroutineScope {
+    private suspend fun buildHome(userId: String, serverUrl: String, fresh: Boolean): HomeContent = coroutineScope {
         val resumeDeferred = async { runCatching { repository.resume(userId, fresh) }.getOrDefault(emptyList()) }
         val viewsDeferred = async { runCatching { repository.views(userId, fresh) }.getOrDefault(emptyList()) }
 
@@ -64,13 +68,21 @@ class HomeViewModel(
             }
         }.awaitAll()
 
-        buildList {
+        val rows = buildList {
             addRow("resume", "Continuar viendo", resume, serverUrl, wide = true)
             addRow("views", "Vistas", views, serverUrl, wide = true)
             latestPerLibrary.forEach { (lib, items) ->
                 addRow("lib-${lib.id}", "Recién añadido en ${lib.name ?: ""}", items, serverUrl, wide = false)
             }
         }
+        // Destacados: recién agregados de todas las bibliotecas, sin repetir, 6.
+        val featured = latestPerLibrary
+            .flatMap { it.second }
+            .distinctBy { it.id }
+            .take(6)
+            .map { it.toHomeCard(serverUrl, wide = true) }
+
+        HomeContent(rows, featured)
     }
 
     private fun MutableList<HomeRow>.addRow(

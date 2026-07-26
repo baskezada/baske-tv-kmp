@@ -112,7 +112,11 @@ fun PlayerScreen(itemId: String, onExit: () -> Unit) {
     val device = LocalDevice.current
 
     val libVlc = remember {
-        LibVLC(context, arrayListOf("--no-drop-late-frames", "--no-skip-frames"))
+        // Sin --no-drop-late-frames: en hardware débil (Chromecast) dejamos que
+        // VLC descarte frames atrasados para mantener la reproducción fluida en
+        // vez de acumular retraso. --avcodec-fast permite atajos de decodificación
+        // con impacto visual mínimo pero menos carga de CPU/GPU.
+        LibVLC(context, arrayListOf("--avcodec-fast"))
     }
     val mediaPlayer = remember { MediaPlayer(libVlc) }
 
@@ -126,6 +130,9 @@ fun PlayerScreen(itemId: String, onExit: () -> Unit) {
     var pendingSubUrl by remember { mutableStateOf<String?>(null) }
     val addedSubs = remember { mutableMapOf<String, Int>() }
     var playbackError by remember { mutableStateOf<String?>(null) }
+    // true recién cuando libVLC emite el primer frame (Playing): hasta entonces
+    // mostramos el loader en vez de dejar la pantalla en negro bufferendo.
+    var videoStarted by remember { mutableStateOf(false) }
 
     val controls = remember(state.subtitles.isEmpty()) {
         buildList {
@@ -148,6 +155,7 @@ fun PlayerScreen(itemId: String, onExit: () -> Unit) {
             when (event.type) {
                 MediaPlayer.Event.Playing -> {
                     isPlaying = true
+                    videoStarted = true
                     val current = viewModel.state.value
                     if (!subtitleAdded && current.subtitleUrl != null) {
                         subtitleAdded = true
@@ -262,9 +270,9 @@ fun PlayerScreen(itemId: String, onExit: () -> Unit) {
             modifier = Modifier.fillMaxSize(),
         )
 
-        if (state.loading) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(color = Color.White)
+        if ((state.loading || !videoStarted) && playbackError == null) {
+            Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(color = LocalAccent.current)
             }
         }
 

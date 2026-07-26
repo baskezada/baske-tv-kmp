@@ -1,21 +1,31 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# ==== Reglas R8 para el build de release (minify + shrink) ====
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+-keepattributes *Annotation*, InnerClasses, Signature, EnclosingMethod
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+# ---- kotlinx.serialization ----
+# Mantener los serializers generados y los campos de los modelos @Serializable.
+-keepclassmembers class **$$serializer { *; }
+-keepclasseswithmembers class * {
+    kotlinx.serialization.KSerializer serializer(...);
+}
+-keep,includedescriptorclasses class cl.baske.tv.data.model.**$$serializer { *; }
+-keepclassmembers class cl.baske.tv.data.model.** { *; }
+-dontnote kotlinx.serialization.**
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+# ---- libVLC (JNI: los nombres NO pueden cambiar ni eliminarse) ----
+-keep class org.videolan.libvlc.** { *; }
+-keep class org.videolan.medialibrary.** { *; }
+-dontwarn org.videolan.**
+
+# ---- Koin (resuelve por tipo; mantener nuestras clases inyectadas) ----
+-keep class cl.baske.tv.**ViewModel { *; }
+-keep class cl.baske.tv.data.** { *; }
+-keep class cl.baske.tv.di.** { *; }
+
+# ---- Ktor / OkHttp (mayormente traen sus reglas, silenciar warnings) ----
+-dontwarn org.slf4j.**
+-dontwarn io.ktor.**
+-dontwarn okhttp3.**
+-dontwarn okio.**
+
+# ---- Coil3 trae sus propias reglas; nada extra ----

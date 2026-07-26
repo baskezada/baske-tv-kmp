@@ -17,3 +17,12 @@ captures
 !*.xcworkspace/contents.xcworkspacedata
 **/xcshareddata/WorkspaceSettings.xcsettings
 node_modules/
+# Firma de release (NUNCA subir la clave ni sus contraseñas)
+keystore.properties
+*.jks
+*.keystore
+
+# Artefactos de build fuera de build/ (AAB/APK de release)
+androidApp/release/
+*.aab
+*.apk
