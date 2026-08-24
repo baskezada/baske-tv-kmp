@@ -9,15 +9,22 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -30,12 +37,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import cl.baske.tv.data.AuthRepository
 import cl.baske.tv.data.HomeMode
+import cl.baske.tv.data.PlayerEngine
 import cl.baske.tv.data.PrefsStore
 import cl.baske.tv.ui.platform.Focusable
 import cl.baske.tv.ui.platform.LocalDevice
@@ -43,13 +51,54 @@ import cl.baske.tv.ui.platform.requestIfTv
 import cl.baske.tv.ui.theme.ACCENT_PRESETS
 import org.koin.compose.koinInject
 
+// ---------------------------------------------------------------------------
+// Ajustes: lista de secciones. Por ahora solo "Interfaz" (luego Mi perfil,
+// Suscripción, Reproducción, Estadísticas).
+// ---------------------------------------------------------------------------
+
 @Composable
-fun SettingsScreen(onBack: () -> Unit) {
-    val prefsStore = koinInject<PrefsStore>()
-    val authRepository = koinInject<AuthRepository>()
-    val prefs by prefsStore.prefs.collectAsStateWithLifecycle()
-    val firstFocus = remember { FocusRequester() }
+fun AjustesScreen(onBack: () -> Unit, onOpenInterfaz: () -> Unit) {
     val device = LocalDevice.current
+    val firstFocus = remember { FocusRequester() }
+    BackHandler { onBack() }
+    LaunchedEffect(Unit) { firstFocus.requestIfTv(device) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF080808))
+            .verticalScroll(rememberScrollState())
+            .statusBarsPadding()
+            .padding(horizontal = device.metrics.gutter, vertical = 20.dp),
+    ) {
+        SettingsHeader("Ajustes", onBack)
+        Spacer(Modifier.height(16.dp))
+        SettingsRow(
+            icon = Icons.Filled.Tune,
+            label = "Interfaz",
+            focusRequester = firstFocus,
+            onClick = onOpenInterfaz,
+        )
+        Spacer(Modifier.height(12.dp))
+        val context = androidx.compose.ui.platform.LocalContext.current
+        SettingsRow(
+            icon = Icons.Filled.BugReport,
+            label = "Exportar logs",
+            onClick = { cl.baske.tv.core.LogExporter.export(context) },
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Interfaz: color de énfasis + vista de inicio.
+// ---------------------------------------------------------------------------
+
+@Composable
+fun InterfazScreen(onBack: () -> Unit) {
+    val prefsStore = koinInject<PrefsStore>()
+    val prefs by prefsStore.prefs.collectAsStateWithLifecycle()
+    val device = LocalDevice.current
+    val firstFocus = remember { FocusRequester() }
 
     BackHandler { onBack() }
     LaunchedEffect(Unit) { firstFocus.requestIfTv(device) }
@@ -59,13 +108,14 @@ fun SettingsScreen(onBack: () -> Unit) {
             .fillMaxSize()
             .background(Color(0xFF080808))
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = device.metrics.gutter, vertical = 40.dp),
+            .statusBarsPadding()
+            .padding(horizontal = device.metrics.gutter, vertical = 20.dp),
     ) {
-        Text("Ajustes", color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(32.dp))
+        SettingsHeader("Interfaz", onBack)
+        Spacer(Modifier.height(24.dp))
 
-        // ---- Color de acento ----
-        SectionLabel("Color de acento")
+        // ---- Color de énfasis ----
+        SectionLabel("Color de énfasis")
         Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
             ACCENT_PRESETS.forEachIndexed { index, color ->
                 val active = color == prefs.accentColor
@@ -92,8 +142,8 @@ fun SettingsScreen(onBack: () -> Unit) {
         }
         Spacer(Modifier.height(36.dp))
 
-        // ---- Modo de inicio ----
-        SectionLabel("Inicio")
+        // ---- Vista de inicio ----
+        SectionLabel("Vista de inicio")
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             val modes = listOf(
                 HomeMode.Vitrina to "Vitrina",
@@ -120,31 +170,91 @@ fun SettingsScreen(onBack: () -> Unit) {
                 }
             }
         }
-        Spacer(Modifier.height(40.dp))
+        Spacer(Modifier.height(36.dp))
 
+        // ---- Reproductor ----
+        SectionLabel("Reproductor")
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Focusable(onClick = onBack) { focused ->
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color(0x1FFFFFFF))
-                        .then(if (focused) Modifier.border(2.dp, Color.White, RoundedCornerShape(12.dp)) else Modifier)
-                        .padding(horizontal = 22.dp, vertical = 12.dp),
-                ) {
-                    Text("Volver", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            val engines = listOf(
+                PlayerEngine.Vlc to "VLC",
+                PlayerEngine.Mpv to "mpv",
+            )
+            engines.forEach { (engine, label) ->
+                val active = prefs.playerEngine == engine
+                Focusable(onClick = { prefsStore.setPlayerEngine(engine) }) { focused ->
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (active) Color(prefs.accentColor) else Color(0x1FFFFFFF))
+                            .then(if (focused) Modifier.border(2.dp, Color.White, RoundedCornerShape(12.dp)) else Modifier)
+                            .padding(horizontal = 20.dp, vertical = 12.dp),
+                    ) {
+                        Text(
+                            label,
+                            color = if (active) Color.Black else Color.White,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
                 }
             }
-            Focusable(onClick = { authRepository.logout() }) { focused ->
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color(0x22EF4444))
-                        .then(if (focused) Modifier.border(2.dp, Color.White, RoundedCornerShape(12.dp)) else Modifier)
-                        .padding(horizontal = 22.dp, vertical = 12.dp),
-                ) {
-                    Text("Cerrar sesión", color = Color(0xFFFF8080), fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "mpv (por defecto) es más fiable y renderiza subtítulos ASS. VLC queda como alternativa.",
+            color = Color(0x80FFFFFF),
+            fontSize = 12.sp,
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun SettingsHeader(title: String, onBack: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        Focusable(onClick = onBack) { highlighted ->
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(Color(0x1FFFFFFF))
+                    .then(if (highlighted) Modifier.border(2.dp, Color(0xB3FFFFFF), CircleShape) else Modifier),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Volver", tint = Color.White, modifier = Modifier.size(20.dp))
             }
+        }
+        Spacer(Modifier.width(16.dp))
+        Text(title, color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+/** Fila de sección de Ajustes: card con icono + label + chevron. */
+@Composable
+private fun SettingsRow(
+    icon: ImageVector,
+    label: String,
+    focusRequester: FocusRequester? = null,
+    onClick: () -> Unit,
+) {
+    Focusable(
+        onClick = onClick,
+        modifier = (focusRequester?.let { Modifier.focusRequester(it) } ?: Modifier).fillMaxWidth(),
+    ) { highlighted ->
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(if (highlighted) Color(0x24FFFFFF) else Color(0x12FFFFFF))
+                .then(if (highlighted) Modifier.border(1.5.dp, Color(0x45FFFFFF), RoundedCornerShape(14.dp)) else Modifier)
+                .padding(horizontal = 16.dp, vertical = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(icon, contentDescription = null, tint = Color(0xCCFFFFFF), modifier = Modifier.size(22.dp))
+            Spacer(Modifier.width(14.dp))
+            Text(label, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = Color(0x66FFFFFF), modifier = Modifier.size(22.dp))
         }
     }
 }

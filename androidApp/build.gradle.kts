@@ -40,6 +40,8 @@ dependencies {
     // Android TV Compose (10-foot UI, D-pad focus)
     implementation(libs.androidx.tv.material)
     implementation(libs.androidx.tv.foundation)
+    // Watch Next / fila "Continuar viendo" del launcher de Android TV / Google TV
+    implementation(libs.androidx.tvprovider)
 
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
@@ -48,12 +50,21 @@ dependencies {
     implementation(libs.koin.android)
     implementation(libs.koin.androidx.compose)
 
+    // Solo para inyectar el HttpClient en la pantalla Descubrir (cliente Seerr).
+    implementation(libs.ktor.client.core)
+
     // Images
     implementation(libs.coil.compose)
     implementation(libs.coil.network.okhttp)
+    implementation(libs.coil.svg)
 
     // Player (libVLC — trae libass para subtítulos ASS)
     implementation(libs.libvlc.all)
+    // Player alternativo (mpv — libass + más fiable, seleccionable en Ajustes)
+    implementation(libs.libmpv)
+
+    // Frosted glass (blur de fondo) para header/bottom bar — solo se activa en phone/tablet.
+    implementation(libs.haze)
 
     // Baseline Profile: profileinstaller aplica el perfil en runtime; el módulo
     // :baselineprofile lo genera.
@@ -69,12 +80,23 @@ android {
         applicationId = "tv.baske.app"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
-        versionCode = 7
+        versionCode = 13
         versionName = "1.0"
+
+        // Feature flag de "Descubrir" (plugin EmbySeerr). Por defecto ON.
+        // Para un build sin Descubrir (p. ej. Play Store): -PenableDiscover=false
+        // → en release, R8 elimina el branch muerto y las clases Seerr del bundle;
+        // la tab se reemplaza por "Buscar".
+        val enableDiscover = (project.findProperty("enableDiscover") as String? ?: "true")
+        buildConfigField("boolean", "ENABLE_DISCOVER", enableDiscover)
     }
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+        jniLibs {
+            // libVLC y libmpv traen su propia copia de libc++_shared.so → tomar una.
+            pickFirsts += "**/libc++_shared.so"
         }
     }
     signingConfigs {
@@ -99,6 +121,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfig = signingConfigs.getByName("debug")
             if (hasKeystore) signingConfig = signingConfigs.getByName("release")
         }
     }
@@ -108,5 +131,6 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }

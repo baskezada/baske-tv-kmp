@@ -13,6 +13,9 @@ val embyJson: Json = Json {
     ignoreUnknownKeys = true
     isLenient = true
     explicitNulls = false
+    // Necesario para que el DeviceProfile (y sus condiciones anidadas) se serialice
+    // completo en el body de PlaybackInfo, incluidos los campos con valor por defecto.
+    encodeDefaults = true
 }
 
 /**

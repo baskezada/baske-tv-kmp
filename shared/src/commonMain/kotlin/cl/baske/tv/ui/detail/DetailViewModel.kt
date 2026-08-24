@@ -23,7 +23,7 @@ class DetailViewModel(
 
     enum class Kind { Movie, Series, Book, Other }
 
-    data class SeasonTab(val id: String, val name: String)
+    data class SeasonTab(val id: String, val name: String, val episodeCount: Int? = null)
     data class EpisodeItem(
         val id: String,
         val title: String,
@@ -31,6 +31,8 @@ class DetailViewModel(
         val overview: String?,
         val imageUrl: String?,
         val progress: Float,
+        val played: Boolean = false,
+        val isFavorite: Boolean = false,
     )
 
     data class UiState(
@@ -40,12 +42,21 @@ class DetailViewModel(
         val logoUrl: String? = null,
         val backdropUrl: String? = null,
         val posterUrl: String? = null,
-        val meta: String = "",
-        val genres: String? = null,
+        // Meta estructurada (para la línea "2026 · 24m · 16 · ★ 7.9 · 1 temp. · géneros").
+        val year: String? = null,
+        val runtimeLabel: String? = null,
+        val officialRating: String? = null,
+        val rating: Double? = null,
+        val seasonsLabel: String? = null,
+        val genresLabel: String? = null,
         val overview: String? = null,
         val playTargetId: String? = null,
         val playLabel: String = "Reproducir",
+        val isFavorite: Boolean = false,
+        val played: Boolean = false,
         val seasons: List<SeasonTab> = emptyList(),
+        /** Ids de TODOS los episodios de la serie (para "Reproducir aleatorio"). */
+        val allEpisodeIds: List<String> = emptyList(),
         val selectedSeasonId: String? = null,
         val episodes: List<EpisodeItem> = emptyList(),
         val episodesLoading: Boolean = false,
@@ -83,22 +94,44 @@ class DetailViewModel(
                 logoUrl = imageUrl(item, "Logo", 480),
                 backdropUrl = backdrop(item),
                 posterUrl = imageUrl(item, "Primary", 400),
-                meta = buildMeta(item),
-                genres = item.genres?.takeIf { it.isNotEmpty() }?.joinToString(" · "),
+                year = item.productionYear?.toString(),
+                runtimeLabel = item.runTimeTicks?.let { formatRuntime(it) },
+                officialRating = item.officialRating,
+                rating = item.communityRating,
+                genresLabel = translateGenres(item.genres),
                 overview = item.overview,
+                isFavorite = item.userData?.isFavorite ?: false,
+                played = item.userData?.played ?: false,
             )
 
             base = when (kind) {
                 Kind.Series -> {
                     val seasons = runCatching { api.getSeasons(itemId, userId).items }.getOrDefault(emptyList())
-                        .map { SeasonTab(it.id, it.name ?: "Temporada") }
+                        .map { SeasonTab(it.id, it.name ?: "Temporada", it.childCount) }
+                    // Lista completa de episodios de la serie: sirve de fallback para
+                    // el botón Reproducir (S1E1 en series no empezadas) y alimenta el
+                    // botón "Reproducir aleatorio".
+                    val allEpisodes = runCatching { api.getSeriesEpisodes(itemId, userId).items }.getOrDefault(emptyList())
+                    // NextUp viene vacío en series NO empezadas; en ese caso se cae
+                    // al primer episodio (S1E1) para que el botón Reproducir siempre
+                    // aparezca, como en la web.
                     val nextUp = runCatching { api.getSeriesNextUp(userId, itemId).items.firstOrNull() }.getOrNull()
+                        ?: allEpisodes.firstOrNull()
                     val hasProgress = (nextUp?.userData?.playbackPositionTicks ?: 0) > 0
+                    // Prefijo "T1:E1" como la web ("T1:E1 Reproducir").
+                    val code = nextUp?.let { ep ->
+                        val p = ep.parentIndexNumber
+                        val i = ep.indexNumber
+                        if (p != null && i != null) "T$p:E$i" else null
+                    }
+                    val verb = if (hasProgress || nextUp?.indexNumber?.let { it > 1 } == true) "Continuar" else "Reproducir"
                     base.copy(
                         seasons = seasons,
+                        allEpisodeIds = allEpisodes.map { it.id },
                         selectedSeasonId = seasons.firstOrNull()?.id,
+                        seasonsLabel = seasons.size.takeIf { it > 0 }?.let { if (it == 1) "1 temp." else "$it temps." },
                         playTargetId = nextUp?.id,
-                        playLabel = if (hasProgress || nextUp?.indexNumber?.let { it > 1 } == true) "Continuar" else "Reproducir",
+                        playLabel = listOfNotNull(code, verb).joinToString(" "),
                     )
                 }
                 Kind.Movie -> {
@@ -129,11 +162,10 @@ class DetailViewModel(
 
     private fun BaseItemDto.toEpisodeItem(): EpisodeItem {
         val num = indexNumber ?: 0
-        val runtimeMin = runTimeTicks?.let { (it / TICKS_PER_MIN).toInt() }
+        // Como la web: "10 abr 2026 · 23m" (fecha de estreno · duración).
         val meta = listOfNotNull(
-            "E$num",
-            runtimeMin?.let { "${it}min" },
-            communityRating?.let { "★ ${formatRating(it)}" },
+            formatDate(premiereDate),
+            runTimeTicks?.let { formatRuntime(it) },
         ).joinToString(" · ")
         val progress = if ((runTimeTicks ?: 0) > 0)
             (userData?.playbackPositionTicks ?: 0).toFloat() / runTimeTicks!!.toFloat() else 0f
@@ -144,7 +176,51 @@ class DetailViewModel(
             overview = overview,
             imageUrl = imageUrl(this, "Primary", 340),
             progress = progress.coerceIn(0f, 1f),
+            played = userData?.played ?: false,
+            isFavorite = userData?.isFavorite ?: false,
         )
+    }
+
+    // ---- Acciones (favorito / marcar visto) ----
+
+    /** Un episodio al azar de toda la serie (para "Reproducir aleatorio"). */
+    fun randomEpisodeId(): String? = _state.value.allEpisodeIds.randomOrNull()
+
+    /** Refresca metadatos de la serie/película (para "¿Faltan temporadas?"). Best-effort (admin). */
+    fun refreshMetadata() {
+        viewModelScope.launch { runCatching { api.refreshItem(itemId) } }
+    }
+
+    fun toggleFavorite() {
+        val fav = !_state.value.isFavorite
+        _state.update { it.copy(isFavorite = fav) }
+        viewModelScope.launch { runCatching { api.setFavorite(userId, itemId, fav) } }
+    }
+
+    fun toggleWatched() {
+        val played = !_state.value.played
+        _state.update { it.copy(played = played) }
+        viewModelScope.launch { runCatching { api.setPlayed(userId, itemId, played) } }
+    }
+
+    fun toggleEpisodeFavorite(epId: String) {
+        val ep = _state.value.episodes.firstOrNull { it.id == epId } ?: return
+        val fav = !ep.isFavorite
+        _state.update { s -> s.copy(episodes = s.episodes.map { if (it.id == epId) it.copy(isFavorite = fav) else it }) }
+        viewModelScope.launch { runCatching { api.setFavorite(userId, epId, fav) } }
+    }
+
+    fun toggleEpisodeWatched(epId: String) {
+        val ep = _state.value.episodes.firstOrNull { it.id == epId } ?: return
+        val played = !ep.played
+        _state.update { s ->
+            s.copy(
+                episodes = s.episodes.map {
+                    if (it.id == epId) it.copy(played = played, progress = if (played) 0f else it.progress) else it
+                },
+            )
+        }
+        viewModelScope.launch { runCatching { api.setPlayed(userId, epId, played) } }
     }
 
     private fun imageUrl(item: BaseItemDto, type: String, width: Int): String? {
@@ -158,16 +234,44 @@ class DetailViewModel(
         else imageUrl(item, "Primary", 1280)
     }
 
-    private fun buildMeta(item: BaseItemDto): String {
-        val runtimeMin = item.runTimeTicks?.let { (it / TICKS_PER_MIN).toInt() }
-        val runtime = runtimeMin?.let { if (it >= 60) "${it / 60}h ${it % 60}min" else "${it}min" }
-        return listOfNotNull(
-            item.productionYear?.toString(),
-            item.officialRating,
-            runtime,
-            item.communityRating?.let { "★ ${formatRating(it)}" },
-        ).joinToString("  ·  ")
+    private fun formatRuntime(ticks: Long): String {
+        val min = (ticks / TICKS_PER_MIN).toInt()
+        return if (min >= 60) "${min / 60}h ${min % 60}m" else "${min}m"
     }
 
-    private fun formatRating(r: Double): String = ((r * 10).toInt() / 10.0).toString()
+    // "2026-04-10T..." → "10 abr 2026". Parseo manual para no meter una lib de
+    // fechas en commonMain; si el formato no matchea, se devuelve null.
+    private fun formatDate(iso: String?): String? {
+        val date = iso?.take(10) ?: return null
+        val parts = date.split("-")
+        if (parts.size != 3) return null
+        val year = parts[0]
+        val month = parts[1].toIntOrNull() ?: return null
+        val day = parts[2].toIntOrNull() ?: return null
+        val months = listOf("ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic")
+        val mName = months.getOrNull(month - 1) ?: return null
+        return "$day $mName $year"
+    }
+
+    private fun translateGenres(genres: List<String>?): String? {
+        val list = genres?.takeIf { it.isNotEmpty() } ?: return null
+        return list.joinToString(", ") { GENRE_ES[it] ?: it }
+    }
+
+    companion object {
+        // Emby devuelve los géneros en inglés; la web los muestra en español.
+        private val GENRE_ES = mapOf(
+            "Action" to "Acción", "Adventure" to "Aventura", "Animation" to "Animación",
+            "Anime" to "Anime", "Comedy" to "Comedia", "Crime" to "Crimen",
+            "Documentary" to "Documental", "Drama" to "Drama", "Family" to "Familia",
+            "Fantasy" to "Fantasía", "History" to "Historia", "Horror" to "Terror",
+            "Music" to "Música", "Musical" to "Musical", "Mystery" to "Misterio",
+            "Romance" to "Romance", "Science Fiction" to "Ciencia ficción",
+            "Sci-Fi & Fantasy" to "Ciencia ficción y fantasía", "Thriller" to "Suspenso",
+            "War" to "Bélica", "War & Politics" to "Bélica y política", "Western" to "Western",
+            "Kids" to "Infantil", "Reality" to "Reality", "Soap" to "Telenovela",
+            "Talk" to "Talk show", "News" to "Noticias", "Suspense" to "Suspenso",
+            "Sport" to "Deporte", "Supernatural" to "Sobrenatural",
+        )
+    }
 }

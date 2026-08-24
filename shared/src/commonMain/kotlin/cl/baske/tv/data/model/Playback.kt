@@ -30,6 +30,11 @@ data class MediaSourceInfo(
     @SerialName("TranscodingUrl") val transcodingUrl: String? = null,
     @SerialName("RunTimeTicks") val runTimeTicks: Long? = null,
     @SerialName("MediaStreams") val mediaStreams: List<MediaStream> = emptyList(),
+    // Live TV: canal = stream infinito que hay que "abrir" (AutoOpenLiveStream).
+    @SerialName("IsInfiniteStream") val isInfiniteStream: Boolean = false,
+    @SerialName("RequiresOpening") val requiresOpening: Boolean = false,
+    /** Id del live stream abierto (para cerrarlo en /LiveStreams/Close). */
+    @SerialName("LiveStreamId") val liveStreamId: String? = null,
 )
 
 @Serializable
@@ -42,6 +47,8 @@ data class MediaStream(
     @SerialName("IsForced") val isForced: Boolean = false,
     @SerialName("Language") val language: String? = null,
     @SerialName("DisplayTitle") val displayTitle: String? = null,
+    @SerialName("Width") val width: Int? = null,
+    @SerialName("Height") val height: Int? = null,
 )
 
 @Serializable

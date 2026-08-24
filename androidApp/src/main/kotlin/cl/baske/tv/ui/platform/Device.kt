@@ -127,19 +127,22 @@ data class Metrics(
                 rowSpacing = 20.dp,
                 sectionTitleSize = 18.sp,
                 gridCellMin = 130.dp,
-                detailPosterWidth = 130.dp,
-                detailTitleSize = 28.sp,
+                detailPosterWidth = 180.dp,
+                detailTitleSize = 40.sp,
             )
             FormFactor.Phone -> Metrics(
                 gutter = 16.dp,
                 headerHeight = 56.dp,
-                heroFraction = if (device.isPortrait) 0.46f else 0.72f,
+                // 56% del alto, como el hero mobile de la web (56vh).
+                heroFraction = if (device.isPortrait) 0.56f else 0.72f,
                 heroTitleSize = 26.sp,
                 heroOverviewLines = 3,
                 heroTextMaxWidth = Dp.Infinity,
-                landscapeCardWidth = 180.dp,
-                portraitCardWidth = 108.dp,
-                cardSpacing = 10.dp,
+                // Mismos anchos que la web mobile: apaisada 240 (16:9),
+                // poster 155 (2:3). Antes 180/108 se veían más chicas.
+                landscapeCardWidth = 240.dp,
+                portraitCardWidth = 155.dp,
+                cardSpacing = 12.dp,
                 rowSpacing = 18.dp,
                 sectionTitleSize = 16.sp,
                 gridCellMin = 104.dp,

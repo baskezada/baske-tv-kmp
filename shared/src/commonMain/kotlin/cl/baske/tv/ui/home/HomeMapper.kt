@@ -75,5 +75,12 @@ fun BaseItemDto.toHomeCard(serverUrl: String, wide: Boolean): HomeCard {
         meta = meta,
         kicker = kicker,
         rating = communityRating,
+        officialRating = officialRating,
+        runtimeTicks = runTimeTicks,
+        type = type,
+        played = userData?.played ?: false,
+        isFavorite = userData?.isFavorite ?: false,
+        seriesId = seriesId,
+        isLibrary = collectionType != null,
     )
 }

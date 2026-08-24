@@ -37,6 +37,16 @@ data class BaseItemDto(
     @SerialName("ImageTags") val imageTags: Map<String, String>? = null,
     @SerialName("BackdropImageTags") val backdropImageTags: List<String>? = null,
     @SerialName("UserData") val userData: UserItemDataDto? = null,
+    @SerialName("Chapters") val chapters: List<ChapterInfo>? = null,
+)
+
+@Serializable
+data class ChapterInfo(
+    @SerialName("StartPositionTicks") val startPositionTicks: Long = 0,
+    @SerialName("Name") val name: String? = null,
+    @SerialName("ImageTag") val imageTag: String? = null,
+    // Emby marca intro/créditos con esto: "IntroStart"/"IntroEnd"/"CreditsStart"/"Chapter".
+    @SerialName("MarkerType") val markerType: String? = null,
 )
 
 @Serializable

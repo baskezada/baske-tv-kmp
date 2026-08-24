@@ -1,7 +1,7 @@
 [versions]
 agp = "9.0.1"
 android-compileSdk = "36"
-android-minSdk = "24"
+android-minSdk = "26"
 android-targetSdk = "36"
 androidx-activity = "1.13.0"
 androidx-lifecycle = "2.11.0-beta01"
@@ -22,6 +22,7 @@ androidxTvMaterial = "1.1.0"
 androidxTvFoundation = "1.0.0"
 coil = "3.5.0"
 libvlc = "3.7.5"
+haze = "1.7.2"
 
 junit = "4.13.2"
 
@@ -79,14 +80,20 @@ androidx-compose-material3 = { module = "androidx.compose.material3:material3" }
 androidx-compose-material-icons-extended = { module = "androidx.compose.material:material-icons-extended" }
 androidx-tv-material = { module = "androidx.tv:tv-material", version.ref = "androidxTvMaterial" }
 androidx-tv-foundation = { module = "androidx.tv:tv-foundation", version.ref = "androidxTvFoundation" }
+androidx-tvprovider = { module = "androidx.tvprovider:tvprovider", version = "1.0.0" }
+libmpv = { module = "dev.jdtech.mpv:libmpv", version = "1.0.0" }
 androidx-lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version.ref = "androidx-lifecycle" }
 
 # --- Images ---
 coil-compose = { module = "io.coil-kt.coil3:coil-compose", version.ref = "coil" }
 coil-network-okhttp = { module = "io.coil-kt.coil3:coil-network-okhttp", version.ref = "coil" }
+coil-svg = { module = "io.coil-kt.coil3:coil-svg", version.ref = "coil" }
 
 # --- Player ---
 libvlc-all = { module = "org.videolan.android:libvlc-all", version.ref = "libvlc" }
+
+# --- Blur (frosted glass, solo phone/tablet) ---
+haze = { module = "dev.chrisbanes.haze:haze", version.ref = "haze" }
 
 [plugins]
 androidApplication = { id = "com.android.application", version.ref = "agp" }

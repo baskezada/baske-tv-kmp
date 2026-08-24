@@ -23,6 +23,19 @@ data class HomeCard(
     /** Etiqueta superior del hero, ej. "SERIE". */
     val kicker: String? = null,
     val rating: Double? = null,
+    /** Clasificación por edad (OfficialRating), ej. "14". Para la meta del hero. */
+    val officialRating: String? = null,
+    /** Duración en ticks (para mostrar "24m" en la meta del hero). */
+    val runtimeTicks: Long? = null,
+    // ---- Para el menú contextual "more" (depende del tipo, como la web) ----
+    /** Tipo Emby crudo: "Movie" | "Series" | "Episode" | ... o null para bibliotecas. */
+    val type: String? = null,
+    val played: Boolean = false,
+    val isFavorite: Boolean = false,
+    /** Para episodios: id de la serie ("Ir a la serie"). */
+    val seriesId: String? = null,
+    /** true si es una card de biblioteca (Vista/CollectionFolder) → "Escanear biblioteca". */
+    val isLibrary: Boolean = false,
 )
 
 data class HomeRow(

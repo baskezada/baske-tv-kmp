@@ -26,7 +26,7 @@ val dataModule = module {
             version = APP_VERSION,
         )
     }
-    single { EmbyApi(get(), get(), get()) }
+    single { EmbyApi(get(), get(), get(), get()) }
     single { AuthRepository(get(), get()) }
     single { HomeRepository(get()) }
     single { PrefsStore(get()) }
