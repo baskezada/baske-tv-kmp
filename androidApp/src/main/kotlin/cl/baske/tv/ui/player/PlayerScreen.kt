@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import kotlin.math.abs
 import kotlin.math.roundToInt
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -56,6 +57,8 @@ import androidx.compose.material.icons.filled.ClosedCaptionOff
 import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.FastForward
+import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material3.CircularProgressIndicator
@@ -103,11 +106,6 @@ import kotlinx.coroutines.withContext
 import org.koin.androidx.compose.koinViewModel
 import org.koin.compose.koinInject
 import org.koin.core.parameter.parametersOf
-import org.videolan.libvlc.LibVLC
-import org.videolan.libvlc.Media
-import org.videolan.libvlc.MediaPlayer
-import org.videolan.libvlc.interfaces.IMedia
-import org.videolan.libvlc.util.VLCVideoLayout
 
 private const val SEEK_STEP_MS = 10_000L
 private const val CONTROLS_TIMEOUT_MS = 4_000L
@@ -123,10 +121,16 @@ private fun seekStepForHold(repeat: Int): Long = when {
 }
 
 private enum class Zone { None, Back, Title, Seek, Buttons }
-internal enum class Transport { SeekBack, PlayPause, SeekFwd, NextEp, Audio, Subtitles, Episodes }
-private enum class Panel { Audio, Subtitles, Episodes, Settings }
+internal enum class Transport { SeekBack, PlayPause, SeekFwd, NextEp, Audio, Subtitles, Episodes, Settings }
+internal enum class Panel { Audio, Subtitles, Episodes, Settings, Quality }
 
-internal class PanelItem(val label: String, val active: Boolean, val onSelect: () -> Unit)
+internal class PanelItem(
+    val label: String,
+    val active: Boolean,
+    /** Si != null, seleccionar el ítem ABRE ese subpanel en vez de aplicar+cerrar. */
+    val submenu: Panel? = null,
+    val onSelect: () -> Unit = {},
+)
 
 private val NAV_KEYS = setOf(
     Key.DirectionLeft, Key.DirectionRight, Key.DirectionUp, Key.DirectionDown,
@@ -134,431 +138,6 @@ private val NAV_KEYS = setOf(
     Key.MediaPlayPause, Key.MediaPlay, Key.MediaPause, Key.MediaFastForward, Key.MediaRewind,
 )
 
-/**
- * Reproducción y su estado viven acá, agnósticos del tipo de input. Lo único
- * que cambia entre Tv y touch es el overlay de controles (`TvPlayerOverlay` /
- * `TouchPlayerOverlay`), que se le pega encima llamando a las mismas acciones.
- */
-@Composable
-fun PlayerScreen(itemId: String, onExit: () -> Unit, onPlayItem: (String) -> Unit = {}) {
-    val viewModel = koinViewModel<PlayerViewModel>(key = itemId) { parametersOf(itemId) }
-    val state by viewModel.state.collectAsStateWithLifecycle()
-    val device = LocalDevice.current
-
-    ImmersiveFullscreen()
-
-    // Auto-siguiente: reproducir el episodio que sigue si existe, si no salir.
-    fun playNextOrExit() { state.nextEpisodeId?.let(onPlayItem) ?: onExit() }
-
-    // Motor de libVLC COMPARTIDO (singleton, pre-calentado al arrancar la app):
-    // así no se paga el init caro de VLC en cada video. Solo el MediaPlayer es
-    // por reproducción.
-    val libVlc = koinInject<LibVLC>()
-    val embyApi = koinInject<cl.baske.tv.data.remote.EmbyApi>()
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val mediaPlayer = remember { MediaPlayer(libVlc) }
-
-    var isPlaying by remember { mutableStateOf(true) }
-    var positionMs by remember { mutableLongStateOf(0L) }
-    var durationMs by remember { mutableLongStateOf(0L) }
-    var startReported by remember { mutableStateOf(false) }
-    var resumeSeeked by remember { mutableStateOf(false) }
-    var subtitleAdded by remember { mutableStateOf(false) }
-    var currentSubUrl by remember { mutableStateOf<String?>(null) }
-    var pendingSubUrl by remember { mutableStateOf<String?>(null) }
-    val addedSubs = remember { mutableMapOf<String, Int>() }
-    var playbackError by remember { mutableStateOf<String?>(null) }
-    // Reintentos de Live TV (EndReached/Error transitorio del transcode) antes de
-    // rendirse con un error real.
-    var liveRetries by remember { mutableIntStateOf(0) }
-    var statsVisible by remember { mutableStateOf(false) }
-    // true recién cuando libVLC emite el primer frame (Playing): hasta entonces
-    // mostramos el loader en vez de dejar la pantalla en negro bufferendo.
-    var videoStarted by remember { mutableStateOf(false) }
-    // Rebuffering a mitad de reproducción: mostramos un spinner sobre el video
-    // (antes se congelaba sin ningún feedback).
-    var buffering by remember { mutableStateOf(false) }
-    var bufferingPct by remember { mutableIntStateOf(0) }
-    // Foco del botón "Saltar intro" y del overlay de TV (para devolver el foco al
-    // overlay cuando el botón desaparece).
-    val skipFocus = remember { FocusRequester() }
-    val tvOverlayFocus = remember { FocusRequester() }
-    // Si tras un tiempo razonable no arrancó (ni error), asumimos que este
-    // dispositivo no pudo con el direct-play (Chromecast/TV con códec pesado):
-    // mostramos un error accionable en vez de un spinner infinito.
-    var loadTimedOut by remember { mutableStateOf(false) }
-    LaunchedEffect(state.streamUrl, videoStarted) {
-        if (state.streamUrl != null && !videoStarted) {
-            delay(30_000)
-            if (!videoStarted) loadTimedOut = true
-        }
-    }
-
-    // Evita que la pantalla se apague/atenúe mientras se reproduce (se libera al
-    // pausar mucho rato o al salir del player). keepScreenOn en la View setea el
-    // FLAG_KEEP_SCREEN_ON de la ventana sin necesidad de castear a Activity.
-    val playerView = LocalView.current
-    DisposableEffect(isPlaying) {
-        playerView.keepScreenOn = isPlaying
-        onDispose { playerView.keepScreenOn = false }
-    }
-
-    val hasNext = state.nextEpisodeId != null
-    val hasEpisodes = state.episodes.isNotEmpty()
-    val controls = remember(state.isLive, state.subtitles.isEmpty(), hasNext, hasEpisodes) {
-        buildList {
-            if (state.isLive) {
-                // Live TV: solo play/pausa. Sin seek (stream infinito), sin
-                // siguiente/episodios/subtítulos.
-                add(Transport.PlayPause)
-            } else {
-                add(Transport.SeekBack); add(Transport.PlayPause); add(Transport.SeekFwd)
-                if (hasNext) add(Transport.NextEp)
-                add(Transport.Audio)
-                if (state.subtitles.isNotEmpty()) add(Transport.Subtitles)
-                if (hasEpisodes) add(Transport.Episodes)
-            }
-        }
-    }
-
-    LaunchedEffect(state.streamUrl) {
-        val url = state.streamUrl ?: return@LaunchedEffect
-        // HLS de transcode (.m3u8): libVLC (HTTP/2) no descomprime el playlist que
-        // Emby manda gzip/deflate → se corrompe. Lo bajamos con Ktor (que sí
-        // descomprime), reescribimos los segmentos a absolutos y se lo damos a VLC
-        // como archivo local. Los segmentos .ts son binarios → VLC los baja bien.
-        // Live TV ya usa .ts progresivo (sin playlist), así que no entra acá.
-        val playUrl = if (url.contains(".m3u8", ignoreCase = true)) {
-            withContext(Dispatchers.IO) {
-                val text = runCatching { embyApi.rewriteHlsPlaylist(url) }.getOrNull()
-                if (text != null) {
-                    runCatching {
-                        val f = java.io.File(context.cacheDir, "hls_$itemId.m3u8")
-                        f.writeText(text)
-                        android.net.Uri.fromFile(f).toString()
-                    }.getOrNull() ?: url
-                } else url
-            }
-        } else url
-        val media = Media(libVlc, Uri.parse(playUrl)).apply {
-            setHWDecoderEnabled(true, false)
-            // Prebuffer generoso + reconexión, por reproducción (aguanta baches de
-            // red sin cortar el video). Refuerza lo global del LibVLC.
-            addOption(":network-caching=3000")
-            addOption(":file-caching=3000")
-            addOption(":http-reconnect")
-        }
-        mediaPlayer.media = media
-        media.release()
-        mediaPlayer.play()
-    }
-
-    // Fallback: si un direct-play no llega a mostrar un FRAME de video (Vout),
-    // reabrir forzando transcode. Cubre el equipo que "acepta" el códec pero no lo
-    // decodifica (HEVC en ChromeOS → negro sin error). Dos ventanas: si ya está
-    // reproduciendo audio (Playing) pero no hay video en 6s → decoder miente; si ni
-    // siquiera arrancó en 12s → colgado abriendo. Solo direct-play (no live/.m3u8).
-    LaunchedEffect(state.streamUrl) {
-        val url = state.streamUrl ?: return@LaunchedEffect
-        if (state.isLive || url.contains(".m3u8", ignoreCase = true)) return@LaunchedEffect
-        var waited = 0
-        while (waited < 12_000) {
-            delay(500); waited += 500
-            if (videoStarted) return@LaunchedEffect
-            if (isPlaying && waited >= 6_000) break // audio corriendo, sin video → falla
-        }
-        if (!videoStarted) viewModel.retryWithTranscode()
-    }
-
-    DisposableEffect(Unit) {
-        mediaPlayer.setEventListener { event ->
-            when (event.type) {
-                MediaPlayer.Event.Buffering -> {
-                    val pct = event.buffering
-                    bufferingPct = pct.toInt()
-                    // <100% = todavía llenando buffer. Al llegar a 100 se reanuda.
-                    buffering = pct < 100f
-                }
-                MediaPlayer.Event.Vout -> {
-                    // Frame de video REAL en pantalla. Es la señal precisa de que el
-                    // decoder anda (Playing puede ser solo audio → negro en equipos
-                    // que "aceptan" el códec pero no lo decodifican, p.ej. HEVC en
-                    // ChromeOS). Con esto el fallback a transcode salta rápido.
-                    if (event.voutCount > 0) { videoStarted = true; buffering = false }
-                }
-                MediaPlayer.Event.Playing -> {
-                    isPlaying = true
-                    buffering = false
-                    val current = viewModel.state.value
-                    if (!subtitleAdded && current.subtitleUrl != null) {
-                        subtitleAdded = true
-                        runCatching {
-                            mediaPlayer.addSlave(IMedia.Slave.Type.Subtitle, Uri.parse(current.subtitleUrl), true)
-                        }
-                        currentSubUrl = current.subtitleUrl
-                        pendingSubUrl = current.subtitleUrl
-                    }
-                    if (!resumeSeeked) {
-                        resumeSeeked = true
-                        if (current.startPositionMs > 3_000) mediaPlayer.time = current.startPositionMs
-                    }
-                    if (!startReported) {
-                        startReported = true
-                        viewModel.reportStart(mediaPlayer.time)
-                    }
-                }
-                MediaPlayer.Event.Paused -> {
-                    isPlaying = false
-                    viewModel.reportProgress(mediaPlayer.time, paused = true)
-                }
-                MediaPlayer.Event.EndReached ->
-                    // Live: el "fin" no es real (canal infinito) → re-abrir el stream
-                    // y seguir. Solo tras varios reintentos fallidos salimos.
-                    if (viewModel.state.value.isLive) {
-                        if (liveRetries < 8) { liveRetries++; videoStarted = false; viewModel.reload() }
-                        else onExit()
-                    } else playNextOrExit()
-                MediaPlayer.Event.EncounteredError -> {
-                    val st = viewModel.state.value
-                    if (st.isLive && liveRetries < 8) {
-                        liveRetries++; videoStarted = false; viewModel.reload()
-                    } else if (!st.isLive && !videoStarted &&
-                        st.streamUrl?.contains(".m3u8") != true && viewModel.retryWithTranscode()
-                    ) {
-                        // Direct-play falló antes de mostrar imagen → transcode.
-                        videoStarted = false
-                    } else {
-                        playbackError = "Error al reproducir el video"
-                    }
-                }
-            }
-        }
-        onDispose { mediaPlayer.setEventListener(null) }
-    }
-
-    LaunchedEffect(Unit) {
-        while (true) {
-            positionMs = mediaPlayer.time
-            durationMs = mediaPlayer.length
-            // Captura el id del track de subtítulo recién agregado (para reusarlo).
-            val pending = pendingSubUrl
-            if (pending != null && mediaPlayer.spuTrack > 0) {
-                addedSubs[pending] = mediaPlayer.spuTrack
-                pendingSubUrl = null
-            }
-            delay(500)
-        }
-    }
-
-    LaunchedEffect(Unit) {
-        while (true) {
-            delay(10_000)
-            if (mediaPlayer.isPlaying) viewModel.reportProgress(mediaPlayer.time, paused = false)
-        }
-    }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            val finalMs = mediaPlayer.time
-            viewModel.reportStopped(finalMs)
-            // Teardown de libVLC en un hilo aparte: stop()/release() pueden
-            // BLOQUEAR si el medio quedó colgado abriendo (típico en Chromecast/TV
-            // con red lenta o códec pesado). Hacerlo en el hilo principal congela
-            // la app justo al volver atrás — que es el síntoma reportado.
-            mediaPlayer.setEventListener(null)
-            runCatching { mediaPlayer.detachViews() }
-            Thread {
-                runCatching { mediaPlayer.stop() }
-                runCatching { mediaPlayer.release() }
-            }.start()
-            // OJO: NO liberar libVlc — es el motor compartido de toda la app.
-        }
-    }
-
-    fun togglePlayPause() { if (mediaPlayer.isPlaying) mediaPlayer.pause() else mediaPlayer.play() }
-    fun seekBy(deltaMs: Long) {
-        val len = mediaPlayer.length
-        val target = (mediaPlayer.time + deltaMs).coerceIn(0L, if (len > 0) len else Long.MAX_VALUE)
-        mediaPlayer.time = target
-        positionMs = target
-    }
-    fun seekToFraction(fraction: Float) {
-        val len = mediaPlayer.length
-        if (len <= 0) return
-        val target = (fraction * len).toLong().coerceIn(0L, len)
-        mediaPlayer.time = target
-        positionMs = target
-    }
-    fun selectSubtitleUrl(url: String) {
-        currentSubUrl = url
-        val id = addedSubs[url]
-        if (id != null && id > 0) {
-            mediaPlayer.spuTrack = id
-        } else {
-            runCatching { mediaPlayer.addSlave(IMedia.Slave.Type.Subtitle, Uri.parse(url), true) }
-            pendingSubUrl = url
-        }
-    }
-    fun disableSubtitle() { currentSubUrl = null; mediaPlayer.spuTrack = -1 }
-
-    fun audioItems(): List<PanelItem> {
-        val tracks = mediaPlayer.audioTracks ?: return emptyList()
-        val current = mediaPlayer.audioTrack
-        return tracks.map { td ->
-            PanelItem(td.name ?: "Pista ${td.id}", td.id == current) { mediaPlayer.audioTrack = td.id }
-        }
-    }
-    fun subtitleItems(): List<PanelItem> = buildList {
-        add(PanelItem("Desactivado", currentSubUrl == null) { disableSubtitle() })
-        state.subtitles.forEach { t -> add(PanelItem(t.label, currentSubUrl == t.url) { selectSubtitleUrl(t.url) }) }
-    }
-    fun episodeItems(): List<PanelItem> =
-        state.episodes.map { ep -> PanelItem(ep.label, ep.current) { if (!ep.current) onPlayItem(ep.id) } }
-
-    Box(
-        modifier = Modifier.fillMaxSize().background(Color.Black),
-    ) {
-        AndroidView(
-            factory = { ctx ->
-                VLCVideoLayout(ctx).apply {
-                    isFocusable = false
-                    isFocusableInTouchMode = false
-                    descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
-                    mediaPlayer.attachViews(this, null, true, false)
-                }
-            },
-            modifier = Modifier.fillMaxSize(),
-        )
-
-        // Error terminal: falla de VLC, del servidor, o timeout de carga.
-        val terminalError = playbackError
-            ?: state.error
-            ?: if (loadTimedOut) "No se pudo iniciar la reproducción en este dispositivo. Puede ser un formato que no reproduce directo aquí." else null
-
-        if ((state.loading || !videoStarted) && terminalError == null) {
-            Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(color = LocalAccent.current)
-            }
-        } else if (buffering && terminalError == null) {
-            // Rebuffering en vivo: spinner + % sobre el frame congelado (sin negro).
-            Box(Modifier.fillMaxSize().background(Color(0x40000000)), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircularProgressIndicator(color = LocalAccent.current)
-                    if (bufferingPct in 1..99) {
-                        Spacer(Modifier.height(10.dp))
-                        Text("$bufferingPct%", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                    }
-                }
-            }
-        }
-
-        if (terminalError != null) {
-            // Con error mostramos SOLO esta pantalla (sin overlay): así el back de
-            // acá sale al toque y no queda atrapado en la lógica del overlay.
-            PlayerErrorScreen(message = terminalError, onExit = onExit)
-        } else if (device.isTv) {
-            TvPlayerOverlay(
-                title = state.title,
-                isPlaying = isPlaying,
-                isLive = state.isLive,
-                positionMs = positionMs,
-                durationMs = durationMs,
-                controls = controls,
-                subsOn = currentSubUrl != null,
-                onTogglePlayPause = ::togglePlayPause,
-                onPlay = mediaPlayer::play,
-                onPause = mediaPlayer::pause,
-                onSeekBy = ::seekBy,
-                onNext = { state.nextEpisodeId?.let(onPlayItem) },
-                audioItems = ::audioItems,
-                subtitleItems = ::subtitleItems,
-                episodeItems = ::episodeItems,
-                onExit = onExit,
-                focus = tvOverlayFocus,
-            )
-        } else {
-            TouchPlayerOverlay(
-                title = state.title,
-                subtitle = state.subtitle,
-                isPlaying = isPlaying,
-                isLive = state.isLive,
-                positionMs = positionMs,
-                durationMs = durationMs,
-                subsOn = currentSubUrl != null,
-                hasSubtitles = state.subtitles.isNotEmpty(),
-                hasNext = hasNext,
-                hasEpisodes = hasEpisodes,
-                onTogglePlayPause = ::togglePlayPause,
-                onSeekBy = ::seekBy,
-                onSeekToFraction = ::seekToFraction,
-                onNext = { state.nextEpisodeId?.let(onPlayItem) },
-                audioItems = ::audioItems,
-                subtitleItems = ::subtitleItems,
-                episodeItems = ::episodeItems,
-                settingsItems = {
-                    qualitySettingsItems(
-                        current = state.qualityBitrate,
-                        sourceHeight = state.sourceHeight,
-                        statsOn = statsVisible,
-                        onToggleStats = { statsVisible = !statsVisible },
-                        onPickQuality = { viewModel.setQuality(it) },
-                    )
-                },
-                statsVisible = statsVisible,
-                statsLines = {
-                    buildList {
-                        add("Motor" to "VLC")
-                        runCatching {
-                            mediaPlayer.currentVideoTrack?.let { vt ->
-                                add("Resolución" to "${vt.width}×${vt.height}")
-                                if (vt.frameRateDen > 0) add("FPS" to (vt.frameRateNum / vt.frameRateDen).toString())
-                            }
-                        }
-                    }
-                },
-                onExit = onExit,
-            )
-        }
-
-        // "Saltar intro": visible mientras la posición está dentro de la ventana de
-        // intro (marcadores IntroStart/IntroEnd de Emby). Persiste aunque los
-        // controles estén ocultos, como en la web.
-        val showSkip = state.introEndMs > 0L &&
-            videoStarted && terminalError == null &&
-            positionMs >= state.introStartMs &&
-            positionMs < state.introEndMs - 400
-        if (showSkip) {
-            Focusable(
-                onClick = { mediaPlayer.time = state.introEndMs; positionMs = state.introEndMs },
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .navigationBarsPadding()
-                    .padding(end = 24.dp, bottom = 120.dp)
-                    .then(if (device.isTv) Modifier.focusRequester(skipFocus) else Modifier),
-            ) { highlighted ->
-                Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(50))
-                        .background(if (highlighted) Color.White else Color(0xF21A1A1D))
-                        .border(1.5.dp, if (highlighted) Color.White else Color(0x59FFFFFF), RoundedCornerShape(50))
-                        .padding(horizontal = 22.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(Icons.Filled.SkipNext, contentDescription = null, tint = if (highlighted) Color.Black else Color.White, modifier = Modifier.size(20.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Saltar intro", color = if (highlighted) Color.Black else Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                }
-            }
-        }
-        // En TV, cuando aparece el botón se enfoca (OK = saltar); al desaparecer,
-        // se devuelve el foco al overlay para no perder el D-pad.
-        if (device.isTv) {
-            LaunchedEffect(showSkip) {
-                runCatching { (if (showSkip) skipFocus else tvOverlayFocus).requestFocus() }
-            }
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Overlay Tv: D-pad puro, sin puntero. El estado de foco/zona vive acá.
@@ -567,6 +146,8 @@ fun PlayerScreen(itemId: String, onExit: () -> Unit, onPlayItem: (String) -> Uni
 @Composable
 internal fun TvPlayerOverlay(
     title: String,
+    subtitle: String?,
+    channelNumber: String? = null,
     isPlaying: Boolean,
     isLive: Boolean,
     positionMs: Long,
@@ -578,26 +159,49 @@ internal fun TvPlayerOverlay(
     onPause: () -> Unit,
     onSeekBy: (Long) -> Unit,
     onNext: () -> Unit,
+    onPrevChannel: (() -> Unit)? = null,
+    onNextChannel: (() -> Unit)? = null,
     audioItems: () -> List<PanelItem>,
     subtitleItems: () -> List<PanelItem>,
     episodeItems: () -> List<PanelItem>,
+    settingsItems: () -> List<PanelItem>,
+    qualityItems: () -> List<PanelItem>,
+    statsVisible: Boolean,
+    statsLines: () -> List<Pair<String, String>>,
     onExit: () -> Unit,
     focus: FocusRequester,
 ) {
     // "Player" es la zona primaria: OK=play/pausa, ←/→=seek. En vivo no hay seek,
     // así que la zona primaria es directamente la fila de botones.
     val playerZone = if (isLive) Zone.Buttons else Zone.Seek
-    var zone by remember { mutableStateOf(if (isLive) Zone.Buttons else Zone.Seek) }
+    // VOD: empieza con los controles OCULTOS (video limpio). Live TV: empieza
+    // MOSTRANDO los controles (para ver qué canal es al abrir/cambiar); se auto-ocultan.
+    var zone by remember { mutableStateOf(if (isLive) Zone.Buttons else Zone.None) }
     var interactionTick by remember { mutableIntStateOf(0) }
     var selectedIndex by remember { mutableIntStateOf(1) }
     var openPanel by remember { mutableStateOf<Panel?>(null) }
     var panelCursor by remember { mutableIntStateOf(0) }
 
+    // Feedback visual (como la web): destello central de play/pausa y destello
+    // lateral de seek. Sirven sobre todo con los controles ocultos.
+    var ppPlaying by remember { mutableStateOf(false) }
+    var ppTick by remember { mutableIntStateOf(0) }
+    var ppVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(ppTick) { if (ppTick == 0) return@LaunchedEffect; ppVisible = true; delay(500); ppVisible = false }
+    // Acumulado de la ráfaga de seek (ms, con signo). El badge muestra +N/−N y se
+    // resetea cuando la ráfaga termina (el badge se desvanece).
+    var seekAccumMs by remember { mutableLongStateOf(0L) }
+    var seekFbTick by remember { mutableIntStateOf(0) }
+    var seekFbVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(seekFbTick) { if (seekFbTick == 0) return@LaunchedEffect; seekFbVisible = true; delay(800); seekFbVisible = false }
+
     val panelItems: List<PanelItem> = when (openPanel) {
         Panel.Audio -> audioItems()
         Panel.Subtitles -> subtitleItems()
         Panel.Episodes -> episodeItems()
-        Panel.Settings, null -> emptyList()
+        Panel.Settings -> settingsItems()
+        Panel.Quality -> qualityItems()
+        null -> emptyList()
     }
 
     // Auto-ocultar; no oculta mientras hay un panel abierto.
@@ -608,10 +212,20 @@ internal fun TvPlayerOverlay(
     LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
     BackHandler {
         when {
+            openPanel == Panel.Quality -> openPanel = Panel.Settings
             openPanel != null -> openPanel = null
             zone != Zone.None -> zone = Zone.None
             else -> onExit()
         }
+    }
+
+    // Play/pausa que oculta al REPRODUCIR (como en el táctil): al pausar deja los
+    // controles visibles; al reanudar los oculta al toque para ver el video limpio.
+    fun playPauseHide() {
+        val resuming = !isPlaying
+        onTogglePlayPause()
+        ppPlaying = resuming; ppTick++            // destello central play/pausa
+        if (resuming) zone = Zone.None
     }
 
     fun handleKeyUp(key: Key): Boolean {
@@ -623,39 +237,64 @@ internal fun TvPlayerOverlay(
                 key == Key.DirectionUp -> panelCursor = (panelCursor - 1).coerceAtLeast(0)
                 key == Key.DirectionDown -> panelCursor = (panelCursor + 1).coerceAtMost(last)
                 key == Key.DirectionCenter || key == Key.Enter || key == Key.Spacebar -> {
-                    panelItems.getOrNull(panelCursor)?.onSelect(); openPanel = null
+                    val item = panelItems.getOrNull(panelCursor)
+                    if (item?.submenu != null) { openPanel = item.submenu; panelCursor = 0 }
+                    else { item?.onSelect(); openPanel = null }
                 }
-                key == Key.DirectionLeft -> openPanel = null
+                // ← vuelve al menú padre desde un submenú; si no, cierra.
+                key == Key.DirectionLeft -> openPanel = if (openPanel == Panel.Quality) Panel.Settings else null
+            }
+            return true
+        }
+        // Live TV: arriba/abajo = cambiar de canal; OK = mostrar/ocultar los
+        // controles (sin play/pausa). Sin seek ni fila de botones.
+        if (isLive) {
+            when {
+                key == Key.DirectionUp -> onPrevChannel?.invoke()
+                key == Key.DirectionDown -> onNextChannel?.invoke()
+                key == Key.DirectionCenter || key == Key.Enter || key == Key.Spacebar ->
+                    zone = if (zone == Zone.None) Zone.Buttons else Zone.None
             }
             return true
         }
         when (key) {
-            Key.MediaPlayPause -> { onTogglePlayPause(); return true }
-            Key.MediaPlay -> { onPlay(); return true }
-            Key.MediaPause -> { onPause(); return true }
-            Key.MediaFastForward -> { onSeekBy(SEEK_STEP_MS); zone = Zone.Seek; return true }
-            Key.MediaRewind -> { onSeekBy(-SEEK_STEP_MS); zone = Zone.Seek; return true }
+            Key.MediaPlayPause -> { playPauseHide(); return true }
+            Key.MediaPlay -> { onPlay(); ppPlaying = true; ppTick++; zone = Zone.None; return true }
+            Key.MediaPause -> { onPause(); ppPlaying = false; ppTick++; return true }
+            Key.MediaFastForward -> { onSeekBy(SEEK_STEP_MS); if (!seekFbVisible) seekAccumMs = 0L; seekAccumMs += SEEK_STEP_MS; seekFbTick++; return true }
+            Key.MediaRewind -> { onSeekBy(-SEEK_STEP_MS); if (!seekFbVisible) seekAccumMs = 0L; seekAccumMs -= SEEK_STEP_MS; seekFbTick++; return true }
             else -> {}
         }
         val center = key == Key.DirectionCenter || key == Key.Enter || key == Key.Spacebar
         when (zone) {
-            // Controles ocultos: cualquier tecla los revela al "player"; OK además play/pausa.
-            Zone.None -> if (center) { onTogglePlayPause(); zone = playerZone } else zone = playerZone
+            // Controles ocultos: OK solo alterna play/pausa (con destello central).
+            // ABAJO va directo al botón play/pausa de la fila; ARRIBA revela el player.
+            Zone.None -> when {
+                center -> {
+                    val resuming = !isPlaying
+                    onTogglePlayPause()
+                    ppPlaying = resuming; ppTick++
+                }
+                key == Key.DirectionDown -> {
+                    selectedIndex = controls.indexOfFirst { it == Transport.PlayPause }.coerceAtLeast(0)
+                    zone = Zone.Buttons
+                }
+                else -> zone = playerZone
+            }
             // "Player": OK = play/pausa, ↑ = Volver, ↓ = fila de botones.
             // (←/→ = seek se manejan en KeyDown, con aceleración al mantener.)
             Zone.Seek -> when {
-                key == Key.DirectionUp -> zone = Zone.Back
                 key == Key.DirectionDown -> zone = Zone.Buttons
-                center -> onTogglePlayPause()
+                center -> playPauseHide()
             }
             Zone.Buttons -> when {
-                key == Key.DirectionUp -> zone = if (isLive) Zone.Back else Zone.Seek
+                key == Key.DirectionUp -> zone = if (isLive) Zone.Buttons else Zone.Seek
                 key == Key.DirectionDown -> zone = Zone.None
                 key == Key.DirectionLeft -> selectedIndex = (selectedIndex - 1).coerceAtLeast(0)
                 key == Key.DirectionRight -> selectedIndex = (selectedIndex + 1).coerceAtMost(controls.lastIndex)
-                center -> when (controls[selectedIndex]) {
+                center -> when (controls.getOrNull(selectedIndex)) {
                     Transport.SeekBack -> onSeekBy(-SEEK_STEP_MS)
-                    Transport.PlayPause -> onTogglePlayPause()
+                    Transport.PlayPause -> playPauseHide()
                     Transport.SeekFwd -> onSeekBy(SEEK_STEP_MS)
                     Transport.NextEp -> onNext()
                     Transport.Audio -> { openPanel = Panel.Audio; panelCursor = 0 }
@@ -665,13 +304,12 @@ internal fun TvPlayerOverlay(
                         // Abrir el panel posicionado en el episodio actual.
                         panelCursor = episodeItems().indexOfFirst { it.active }.coerceAtLeast(0)
                     }
+                    Transport.Settings -> { openPanel = Panel.Settings; panelCursor = 0 }
+                    null -> {}
                 }
             }
-            Zone.Back -> when {
-                key == Key.DirectionDown -> zone = playerZone
-                center -> onExit()
-            }
-            Zone.Title -> {}
+            // Zonas ya no usadas (se salía por Volver; ahora se sale con el botón físico Atrás).
+            Zone.Back, Zone.Title -> {}
         }
         return true
     }
@@ -696,8 +334,12 @@ internal fun TvPlayerOverlay(
                         if (isSeekKey && seekContext) {
                             interactionTick++
                             val step = seekStepForHold(event.nativeKeyEvent.repeatCount)
-                            onSeekBy(if (event.key == Key.DirectionLeft) -step else step)
-                            zone = Zone.Seek
+                            val delta = if (event.key == Key.DirectionLeft) -step else step
+                            onSeekBy(delta)
+                            // Solo seek + destello lateral (acumulado); NO abre los controles.
+                            if (!seekFbVisible) seekAccumMs = 0L      // nueva ráfaga
+                            seekAccumMs += delta
+                            seekFbTick++
                         }
                         true
                     }
@@ -707,19 +349,27 @@ internal fun TvPlayerOverlay(
                 }
             },
     ) {
+        // Destellos de feedback (como la web): laterales de seek + central de play/pausa.
+        // Independientes de los controles → se ven aunque estén ocultos.
         AnimatedVisibility(
-            visible = controlsVisible, enter = fadeIn(), exit = fadeOut(),
-            modifier = Modifier.align(Alignment.TopStart),
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Brush.verticalGradient(listOf(Color(0xC2000000), Color.Transparent)))
-                    .statusBarsPadding()
-                    .padding(horizontal = 32.dp, vertical = 20.dp),
-            ) {
-                BackPill(focused = zone == Zone.Back)
-            }
+            visible = seekFbVisible && seekAccumMs < 0, enter = fadeIn(), exit = fadeOut(),
+            modifier = Modifier.align(Alignment.CenterStart),
+        ) { SeekFeedback(seekAccumMs) }
+        AnimatedVisibility(
+            visible = seekFbVisible && seekAccumMs > 0, enter = fadeIn(), exit = fadeOut(),
+            modifier = Modifier.align(Alignment.CenterEnd),
+        ) { SeekFeedback(seekAccumMs) }
+        AnimatedVisibility(
+            visible = ppVisible, enter = fadeIn(), exit = fadeOut(),
+            modifier = Modifier.align(Alignment.Center),
+        ) { CenterPlayPauseFeedback(playing = ppPlaying) }
+
+        // Stats for nerds (se prende/apaga desde Ajustes), arriba-izquierda.
+        if (statsVisible) {
+            StatsOverlay(
+                lines = statsLines,
+                modifier = Modifier.align(Alignment.TopStart).statusBarsPadding().padding(start = 32.dp, top = 24.dp),
+            )
         }
 
         AnimatedVisibility(
@@ -728,6 +378,8 @@ internal fun TvPlayerOverlay(
         ) {
             PlayerControls(
                 title = title,
+                subtitle = subtitle,
+                channelNumber = channelNumber,
                 isPlaying = isPlaying,
                 isLive = isLive,
                 positionMs = positionMs,
@@ -741,7 +393,7 @@ internal fun TvPlayerOverlay(
 
         openPanel?.let { panel ->
             PlayerPanel(
-                title = when (panel) { Panel.Audio -> "Audio"; Panel.Subtitles -> "Subtítulos"; Panel.Episodes -> "Episodios"; Panel.Settings -> "Ajustes" },
+                title = when (panel) { Panel.Audio -> "Audio"; Panel.Subtitles -> "Subtítulos"; Panel.Episodes -> "Episodios"; Panel.Settings -> "Ajustes"; Panel.Quality -> "Calidad" },
                 items = panelItems,
                 cursor = panelCursor.coerceIn(0, (panelItems.size - 1).coerceAtLeast(0)),
                 modifier = Modifier
@@ -777,25 +429,26 @@ internal fun TouchPlayerOverlay(
     subtitleItems: () -> List<PanelItem>,
     episodeItems: () -> List<PanelItem>,
     settingsItems: () -> List<PanelItem>,
+    qualityItems: () -> List<PanelItem>,
     statsVisible: Boolean,
     statsLines: () -> List<Pair<String, String>>,
     onExit: () -> Unit,
 ) {
-    var controlsVisible by remember { mutableStateOf(true) }
+    var controlsVisible by remember { mutableStateOf(false) }   // empieza oculto
     var openPanel by remember { mutableStateOf<Panel?>(null) }
     var interactionTick by remember { mutableIntStateOf(0) }
     var scrubbing by remember { mutableStateOf(false) }
     var scrubFraction by remember { mutableFloatStateOf(0f) }
     // Ancho del overlay (para saber en qué tercio cayó el doble-tap).
     var overlayWidth by remember { mutableIntStateOf(0) }
-    // Feedback visual del doble-tap: lado (-1 izq / +1 der) + tick para reanimar.
-    var seekSide by remember { mutableIntStateOf(0) }
+    // Feedback del doble-tap: acumulado de la ráfaga (+N/−N s). Se resetea al desvanecerse.
+    var seekAccumMs by remember { mutableLongStateOf(0L) }
     var seekTick by remember { mutableIntStateOf(0) }
     var seekVisible by remember { mutableStateOf(false) }
     LaunchedEffect(seekTick) {
         if (seekTick == 0) return@LaunchedEffect
         seekVisible = true
-        delay(600)
+        delay(800)
         seekVisible = false
     }
 
@@ -834,6 +487,7 @@ internal fun TouchPlayerOverlay(
     }
     BackHandler {
         when {
+            openPanel == Panel.Quality -> openPanel = Panel.Settings
             openPanel != null -> openPanel = null
             else -> onExit()
         }
@@ -844,6 +498,7 @@ internal fun TouchPlayerOverlay(
         Panel.Subtitles -> subtitleItems()
         Panel.Episodes -> episodeItems()
         Panel.Settings -> settingsItems()
+        Panel.Quality -> qualityItems()
         null -> emptyList()
     }
     val fraction = if (durationMs > 0) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
@@ -868,10 +523,16 @@ internal fun TouchPlayerOverlay(
                     // (como en la web / YouTube). En vivo no hay seek → siempre play/pausa.
                     onDoubleTap = { offset ->
                         val third = overlayWidth / 3f
+                        fun seekFb(delta: Long) {
+                            onSeekBy(delta)
+                            if (!seekVisible) seekAccumMs = 0L    // nueva ráfaga
+                            seekAccumMs += delta
+                            seekTick++; interactionTick++
+                        }
                         when {
                             isLive || overlayWidth == 0 -> playPauseSmart()
-                            offset.x < third -> { onSeekBy(-SEEK_STEP_MS); seekSide = -1; seekTick++; interactionTick++ }
-                            offset.x > overlayWidth - third -> { onSeekBy(SEEK_STEP_MS); seekSide = 1; seekTick++; interactionTick++ }
+                            offset.x < third -> seekFb(-SEEK_STEP_MS)
+                            offset.x > overlayWidth - third -> seekFb(SEEK_STEP_MS)
                             else -> playPauseSmart()
                         }
                     },
@@ -937,13 +598,13 @@ internal fun TouchPlayerOverlay(
 
         // Feedback del doble-tap: destello con «⟲10 / 10⟳» en el lado tocado.
         AnimatedVisibility(
-            visible = seekVisible && seekSide < 0, enter = fadeIn(), exit = fadeOut(),
+            visible = seekVisible && seekAccumMs < 0, enter = fadeIn(), exit = fadeOut(),
             modifier = Modifier.align(Alignment.CenterStart),
-        ) { SeekFeedback(back = true) }
+        ) { SeekFeedback(seekAccumMs) }
         AnimatedVisibility(
-            visible = seekVisible && seekSide > 0, enter = fadeIn(), exit = fadeOut(),
+            visible = seekVisible && seekAccumMs > 0, enter = fadeIn(), exit = fadeOut(),
             modifier = Modifier.align(Alignment.CenterEnd),
-        ) { SeekFeedback(back = false) }
+        ) { SeekFeedback(seekAccumMs) }
 
         // Medidor de brillo (izquierda) / volumen (derecha) mientras se desliza.
         AnimatedVisibility(
@@ -964,8 +625,9 @@ internal fun TouchPlayerOverlay(
         }
 
         // Transporte CENTRAL: play/pausa grande al medio + ±10s a los lados (como la web).
+        // En vivo no se muestra (no hay play/pausa ni seek en Live TV).
         AnimatedVisibility(
-            visible = controlsVisible, enter = fadeIn(), exit = fadeOut(),
+            visible = controlsVisible && !isLive, enter = fadeIn(), exit = fadeOut(),
             modifier = Modifier.align(Alignment.Center),
         ) {
             Row(
@@ -1089,31 +751,35 @@ internal fun TouchPlayerOverlay(
                             onClick = { openPanel = Panel.Subtitles; interactionTick++ },
                         )
                     }
-                    // Ajustes: selector de calidad + estadísticas (nerds).
-                    TransportButton(
-                        Icons.Filled.Settings, selected = false, active = openPanel == Panel.Settings,
-                        onClick = { openPanel = Panel.Settings; interactionTick++ },
-                    )
+                    // Ajustes: selector de calidad + estadísticas. No en Live TV.
+                    if (!isLive) {
+                        TransportButton(
+                            Icons.Filled.Settings, selected = false, active = openPanel == Panel.Settings,
+                            onClick = { openPanel = Panel.Settings; interactionTick++ },
+                        )
+                    }
                 }
             }
         }
 
         openPanel?.let { panel ->
-            // Scrim a pantalla completa: tocar afuera del panel lo cierra.
+            // Scrim a pantalla completa: tocar afuera vuelve al menú padre (o cierra).
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
-                        onClick = { openPanel = null },
+                        onClick = { openPanel = if (openPanel == Panel.Quality) Panel.Settings else null },
                     ),
             )
             PlayerPanel(
-                title = when (panel) { Panel.Audio -> "Audio"; Panel.Subtitles -> "Subtítulos"; Panel.Episodes -> "Episodios"; Panel.Settings -> "Ajustes" },
-                // Al elegir una opción, además de aplicarla, cierra el panel.
+                title = when (panel) { Panel.Audio -> "Audio"; Panel.Subtitles -> "Subtítulos"; Panel.Episodes -> "Episodios"; Panel.Settings -> "Ajustes"; Panel.Quality -> "Calidad" },
+                // Al tocar un ítem: si es submenú lo abre; si no, aplica y cierra.
                 items = panelItems.map { pi ->
-                    PanelItem(pi.label, pi.active) { pi.onSelect(); openPanel = null }
+                    PanelItem(pi.label, pi.active, pi.submenu) {
+                        if (pi.submenu != null) openPanel = pi.submenu else { pi.onSelect(); openPanel = null }
+                    }
                 },
                 cursor = -1,
                 modifier = Modifier
@@ -1200,6 +866,8 @@ private fun LiveBadge() {
 @Composable
 private fun PlayerControls(
     title: String,
+    subtitle: String?,
+    channelNumber: String?,
     isPlaying: Boolean,
     isLive: Boolean,
     positionMs: Long,
@@ -1215,9 +883,26 @@ private fun PlayerControls(
             .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xE6000000))))
             .padding(start = 40.dp, end = 40.dp, top = 80.dp, bottom = 32.dp),
     ) {
+        // Live TV: número del canal en grande, arriba del nombre del canal.
+        if (isLive && !channelNumber.isNullOrBlank()) {
+            Text(
+                channelNumber, color = LocalAccent.current, fontWeight = FontWeight.Bold,
+                fontSize = 34.sp, lineHeight = 36.sp,
+            )
+            Spacer(Modifier.height(2.dp))
+        }
+        // Serie arriba (chica, gris) y episodio abajo (grande, destacado). En pelis
+        // (sin episodio) va solo el título grande.
+        subtitle?.let {
+            Text(
+                title, color = Color(0xB3FFFFFF), fontSize = 14.sp, fontWeight = FontWeight.Medium,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(3.dp))
+        }
         Text(
-            title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 22.sp, maxLines = 1,
-            textDecoration = if (zone == Zone.Title) TextDecoration.Underline else TextDecoration.None,
+            subtitle ?: title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 22.sp,
+            maxLines = 1, overflow = TextOverflow.Ellipsis,
         )
         Spacer(Modifier.height(14.dp))
 
@@ -1275,6 +960,7 @@ private fun PlayerControls(
                         selected, active = subsOn,
                     )
                     Transport.Episodes -> TransportButton(Icons.AutoMirrored.Filled.PlaylistPlay, selected)
+                    Transport.Settings -> TransportButton(Icons.Filled.Settings, selected)
                 }
             }
         }
@@ -1396,9 +1082,11 @@ private fun TransportButton(
     }
 }
 
-/** Badge circular transitorio que aparece al doble-tap (⟲10 izquierda / 10⟳ derecha). */
+/** Badge circular transitorio del seek: muestra el ACUMULADO de la ráfaga (+30 s / −20 s). */
 @Composable
-private fun SeekFeedback(back: Boolean) {
+private fun SeekFeedback(deltaMs: Long) {
+    val forward = deltaMs >= 0
+    val secs = (abs(deltaMs) / 1000).toInt()
     Box(
         modifier = Modifier
             .padding(horizontal = 28.dp)
@@ -1409,11 +1097,14 @@ private fun SeekFeedback(back: Boolean) {
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Icon(
-                if (back) Icons.Filled.Replay10 else Icons.Filled.Forward10,
+                if (forward) Icons.Filled.FastForward else Icons.Filled.FastRewind,
                 contentDescription = null, tint = Color.White, modifier = Modifier.size(34.dp),
             )
             Spacer(Modifier.height(2.dp))
-            Text("10 s", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Text(
+                "${if (forward) "+" else "−"}$secs s",
+                color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+            )
         }
     }
 }
@@ -1462,15 +1153,31 @@ private fun VolumeBrightnessGauge(side: Int, value: Float) {
     }
 }
 
-/** Ítems del panel de Ajustes: toggle de estadísticas + presets de calidad. */
-internal fun qualitySettingsItems(
-    current: Int?,
-    sourceHeight: Int?,
+/** Etiqueta corta de la calidad actual (para mostrarla en el menú de Ajustes). */
+internal fun qualityLabel(bitrate: Int?): String = when (bitrate) {
+    null -> "Original"
+    10_000_000 -> "1080p"
+    4_000_000 -> "720p"
+    2_000_000 -> "540p"
+    else -> "Auto"
+}
+
+/** Menú de Ajustes: "Calidad" (abre submenú) + toggle de estadísticas. */
+internal fun settingsMenuItems(
+    currentQualityLabel: String,
     statsOn: Boolean,
     onToggleStats: () -> Unit,
+): List<PanelItem> = listOf(
+    PanelItem("Calidad · $currentQualityLabel", active = false, submenu = Panel.Quality),
+    PanelItem(if (statsOn) "Ocultar estadísticas" else "Estadísticas (nerds)", statsOn) { onToggleStats() },
+)
+
+/** Submenú de Calidad: Original (si la fuente ≤1080p) + presets. */
+internal fun qualityMenuItems(
+    current: Int?,
+    sourceHeight: Int?,
     onPickQuality: (Int?) -> Unit,
 ): List<PanelItem> = buildList {
-    add(PanelItem(if (statsOn) "Ocultar estadísticas" else "Estadísticas (nerds)", statsOn, onToggleStats))
     // "Original" (direct-play, calidad de la fuente) solo si NO supera 1080p. Si la
     // fuente es 4K/1440p, el tope pasa a 1080p (no ofrecemos el original, muy pesado).
     if (sourceHeight == null || sourceHeight <= 1080) {
@@ -1502,6 +1209,23 @@ private fun StatsOverlay(lines: () -> List<Pair<String, String>>, modifier: Modi
                 Text(v, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Medium)
             }
         }
+    }
+}
+
+/** Destello central de play/pausa (como la web), transitorio. */
+@Composable
+private fun CenterPlayPauseFeedback(playing: Boolean) {
+    Box(
+        modifier = Modifier
+            .size(104.dp)
+            .clip(CircleShape)
+            .background(Color(0x59000000)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            if (playing) Icons.Filled.PlayArrow else Icons.Filled.Pause,
+            contentDescription = null, tint = Color.White, modifier = Modifier.size(52.dp),
+        )
     }
 }
 

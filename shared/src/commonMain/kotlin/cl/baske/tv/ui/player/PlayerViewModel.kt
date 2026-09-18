@@ -6,6 +6,8 @@ import cl.baske.tv.data.SessionStore
 import cl.baske.tv.data.model.MediaStream
 import cl.baske.tv.data.model.PlaybackReport
 import cl.baske.tv.data.remote.EmbyApi
+import kotlinx.coroutines.DelicateCoroutinesApi
+import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -50,6 +52,11 @@ class PlayerViewModel(
         val episodes: List<EpisodeChoice> = emptyList(),
         /** Canal de Live TV: sin barra de progreso/seek, sin intro/siguiente. */
         val isLive: Boolean = false,
+        /** Live TV: canal anterior/siguiente (con wrap) para cambiar con arriba/abajo. */
+        val prevChannelId: String? = null,
+        val nextChannelId: String? = null,
+        /** Live TV: número del canal (ej. "5.1"), para mostrarlo grande arriba del nombre. */
+        val channelNumber: String? = null,
         /** Calidad elegida (maxBitrate en bps); null = Auto (direct-play si se puede). */
         val qualityBitrate: Int? = null,
         /** Altura del video de la fuente (para el selector: oculta "Original" si >1080). */
@@ -180,6 +187,7 @@ class PlayerViewModel(
                 isLive = isLive,
                 qualityBitrate = maxBitrate,
                 sourceHeight = source.mediaStreams?.firstOrNull { it.type == "Video" }?.height,
+                channelNumber = if (isLive) item?.channelNumber else null,
             )
 
             // Si esto es un episodio, traer la serie completa (en segundo plano,
@@ -195,6 +203,20 @@ class PlayerViewModel(
                     nextEpisodeLabel = next?.let { episodeLabel(it) },
                     episodes = eps.map { EpisodeChoice(it.id, episodeLabel(it), it.id == itemId) },
                 )
+            }
+
+            // Live TV: traer la lista de canales (en segundo plano) para poder
+            // cambiar con arriba/abajo. Con wrap (el último vuelve al primero).
+            if (isLive) {
+                val chans = runCatching { api.getLiveTvChannels(session.userId).items }.getOrNull().orEmpty()
+                val idx = chans.indexOfFirst { it.id == itemId }
+                if (idx >= 0 && chans.size > 1) {
+                    val n = chans.size
+                    _state.value = _state.value.copy(
+                        prevChannelId = chans[(idx - 1 + n) % n].id,
+                        nextChannelId = chans[(idx + 1) % n].id,
+                    )
+                }
             }
         }
     }
@@ -221,13 +243,18 @@ class PlayerViewModel(
         report("/Sessions/Playing/Stopped", positionMs, paused = false)
         // Live TV: cerrar el stream para liberar el tuner del servidor.
         liveStreamId?.let { id ->
-            viewModelScope.launch { runCatching { api.closeLiveStream(id) } }
+            @OptIn(DelicateCoroutinesApi::class)
+            GlobalScope.launch { runCatching { api.closeLiveStream(id) } }
         }
     }
 
+    // Fire-and-forget en un scope de APP (no el de la VM): el reporte —sobre todo
+    // el "Stopped"— debe completarse aunque la VM se destruya al salir del player.
+    // Con viewModelScope el coroutine se cancelaba al salir y Emby no persistía la
+    // posición final → al reabrir el resume volvía al inicio.
+    @OptIn(DelicateCoroutinesApi::class)
     private fun report(path: String, positionMs: Long, paused: Boolean) {
-        // Fire-and-forget: un reporte fallido no debe romper la reproducción.
-        viewModelScope.launch {
+        GlobalScope.launch {
             runCatching {
                 api.reportPlayback(
                     path,

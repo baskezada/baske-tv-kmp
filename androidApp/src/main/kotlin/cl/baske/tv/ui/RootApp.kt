@@ -27,7 +27,6 @@ import cl.baske.tv.ui.home.NavTarget
 import cl.baske.tv.ui.library.LibraryScreen
 import cl.baske.tv.ui.platform.LocalDevice
 import cl.baske.tv.ui.platform.rememberDevice
-import cl.baske.tv.ui.player.PlayerScreen
 import cl.baske.tv.ui.settings.AjustesScreen
 import cl.baske.tv.ui.settings.InterfazScreen
 import cl.baske.tv.ui.theme.BaskeTheme
@@ -96,19 +95,11 @@ fun RootApp(
                 // el onDispose del anterior reporta Stopped + libera. Sin el key,
                 // los remember/estado del player anterior se arrastrarían.
                 playingItemId != null -> key(playingItemId) {
-                    if (prefs.playerEngine == cl.baske.tv.data.PlayerEngine.Mpv) {
-                        cl.baske.tv.ui.player.MpvPlayerScreen(
-                            itemId = playingItemId!!,
-                            onExit = { playingItemId = null },
-                            onPlayItem = { nextId -> playingItemId = nextId },
-                        )
-                    } else {
-                        PlayerScreen(
-                            itemId = playingItemId!!,
-                            onExit = { playingItemId = null },
-                            onPlayItem = { nextId -> playingItemId = nextId },
-                        )
-                    }
+                    cl.baske.tv.ui.player.MpvPlayerScreen(
+                        itemId = playingItemId!!,
+                        onExit = { playingItemId = null },
+                        onPlayItem = { nextId -> playingItemId = nextId },
+                    )
                 }
                 detailItemId != null -> DetailScreen(
                     itemId = detailItemId!!,

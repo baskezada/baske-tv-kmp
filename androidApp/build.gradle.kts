@@ -58,9 +58,7 @@ dependencies {
     implementation(libs.coil.network.okhttp)
     implementation(libs.coil.svg)
 
-    // Player (libVLC — trae libass para subtítulos ASS)
-    implementation(libs.libvlc.all)
-    // Player alternativo (mpv — libass + más fiable, seleccionable en Ajustes)
+    // Player: mpv (libmpv) — libass integrado, HTTP/HLS robusto, HW decode.
     implementation(libs.libmpv)
 
     // Frosted glass (blur de fondo) para header/bottom bar — solo se activa en phone/tablet.
@@ -80,7 +78,7 @@ android {
         applicationId = "tv.baske.app"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
-        versionCode = 13
+        versionCode = 14
         versionName = "1.0"
 
         // Feature flag de "Descubrir" (plugin EmbySeerr). Por defecto ON.
@@ -93,10 +91,6 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
-        }
-        jniLibs {
-            // libVLC y libmpv traen su propia copia de libc++_shared.so → tomar una.
-            pickFirsts += "**/libc++_shared.so"
         }
     }
     signingConfigs {

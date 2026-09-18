@@ -43,7 +43,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import cl.baske.tv.data.HomeMode
-import cl.baske.tv.data.PlayerEngine
 import cl.baske.tv.data.PrefsStore
 import cl.baske.tv.ui.platform.Focusable
 import cl.baske.tv.ui.platform.LocalDevice
@@ -170,41 +169,6 @@ fun InterfazScreen(onBack: () -> Unit) {
                 }
             }
         }
-        Spacer(Modifier.height(36.dp))
-
-        // ---- Reproductor ----
-        SectionLabel("Reproductor")
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            val engines = listOf(
-                PlayerEngine.Vlc to "VLC",
-                PlayerEngine.Mpv to "mpv",
-            )
-            engines.forEach { (engine, label) ->
-                val active = prefs.playerEngine == engine
-                Focusable(onClick = { prefsStore.setPlayerEngine(engine) }) { focused ->
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(if (active) Color(prefs.accentColor) else Color(0x1FFFFFFF))
-                            .then(if (focused) Modifier.border(2.dp, Color.White, RoundedCornerShape(12.dp)) else Modifier)
-                            .padding(horizontal = 20.dp, vertical = 12.dp),
-                    ) {
-                        Text(
-                            label,
-                            color = if (active) Color.Black else Color.White,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                    }
-                }
-            }
-        }
-        Spacer(Modifier.height(8.dp))
-        Text(
-            "mpv (por defecto) es más fiable y renderiza subtítulos ASS. VLC queda como alternativa.",
-            color = Color(0x80FFFFFF),
-            fontSize = 12.sp,
-        )
     }
 }
 

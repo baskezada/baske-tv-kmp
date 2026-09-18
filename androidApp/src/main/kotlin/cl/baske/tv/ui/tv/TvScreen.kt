@@ -14,14 +14,17 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -52,8 +55,14 @@ fun TvScreen(
     topPadding: Dp,
     bottomPadding: Dp,
     gridState: LazyGridState = rememberLazyGridState(),
+    upFocus: FocusRequester? = null,
     onPlayChannel: (String) -> Unit,
 ) {
+    // Índice hasta el cual las cards están en la PRIMERA fila (para que "arriba" las
+    // lleve al header, no a la fila de abajo).
+    val firstRowCount by remember {
+        derivedStateOf { gridState.layoutInfo.visibleItemsInfo.count { it.row == 0 }.coerceAtLeast(1) }
+    }
     val api = koinInject<EmbyApi>()
     val sessionStore = koinInject<SessionStore>()
     val session by sessionStore.session.collectAsStateWithLifecycle()
@@ -85,8 +94,12 @@ fun TvScreen(
                 verticalArrangement = Arrangement.spacedBy(14.dp),
                 modifier = Modifier.fillMaxSize(),
             ) {
-                items(channels, key = { it.id }) { ch ->
-                    ChannelCard(ch, session?.serverUrl ?: "") { onPlayChannel(ch.id) }
+                itemsIndexed(channels, key = { _, it -> it.id }) { index, ch ->
+                    ChannelCard(
+                        ch,
+                        session?.serverUrl ?: "",
+                        upFocus = upFocus?.takeIf { index < firstRowCount },
+                    ) { onPlayChannel(ch.id) }
                 }
             }
         }
@@ -94,11 +107,20 @@ fun TvScreen(
 }
 
 @Composable
-private fun ChannelCard(channel: BaseItemDto, serverUrl: String, onClick: () -> Unit) {
+private fun ChannelCard(
+    channel: BaseItemDto,
+    serverUrl: String,
+    upFocus: FocusRequester? = null,
+    onClick: () -> Unit,
+) {
+    val device = LocalDevice.current
     val tag = channel.imageTags?.get("Primary")
     val url = embyImageUrl(serverUrl, channel.id, "Primary", tag, 320)
     Column {
-        Focusable(onClick = onClick) { highlighted ->
+        Focusable(
+            onClick = onClick,
+            modifier = if (upFocus != null && device.isTv) Modifier.focusProperties { up = upFocus } else Modifier,
+        ) { highlighted ->
             Box(
                 modifier = Modifier
                     .fillMaxWidth()

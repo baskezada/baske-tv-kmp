@@ -160,6 +160,7 @@ fun HomeScreen(
     val gearFocus = remember { FocusRequester() }
     val heroPlayFocus = remember { FocusRequester() }
     val navHomeFocus = remember { FocusRequester() }
+    val navTvFocus = remember { FocusRequester() }
     // Grupo de foco del contenido de cada tab: el D-pad BAJA de los tabs a este
     // grupo, que delega en su primer enfocable. Apuntar a un grupo (contenedor
     // SIEMPRE montado) en vez de a una card puntual evita el "FocusRequester not
@@ -328,6 +329,7 @@ fun HomeScreen(
                     onTabFocused = { activeTab = it },
                     gearFocus = gearFocus,
                     navHomeFocus = navHomeFocus,
+                    navTvFocus = navTvFocus,
                     downFocus = down,
                     avatarUrl = avatarUrl,
                     userInitial = userInitial,
@@ -389,6 +391,7 @@ fun HomeScreen(
                             topPadding = topInset,
                             bottomPadding = bottomReserve,
                             gridState = tvGridState,
+                            upFocus = navTvFocus,
                             onPlayChannel = { id ->
                                 onPlayItem(HomeCard(id = id, title = "", subtitle = null, imageUrl = null, playDirect = true, navTarget = NavTarget.Player))
                             },
@@ -791,6 +794,7 @@ private fun HomeHeader(
     onTabFocused: (Tab) -> Unit,
     gearFocus: FocusRequester,
     navHomeFocus: FocusRequester,
+    navTvFocus: FocusRequester,
     downFocus: FocusRequester?,
     avatarUrl: String?,
     userInitial: String,
@@ -828,19 +832,21 @@ private fun HomeHeader(
         ) {
             NavPill("Inicio", active = activeTab == Tab.Home, accent = accent, onFocused = { onTabFocused(Tab.Home) }, modifier = Modifier.focusRequester(navHomeFocus).then(downMod))
             NavPill(if (BuildConfig.ENABLE_DISCOVER) "Descubrir" else "Buscar", active = activeTab == Tab.Descubrir, accent = accent, onFocused = { onTabFocused(Tab.Descubrir) }, modifier = downMod)
-            NavPill("TV", active = activeTab == Tab.TV, accent = accent, onFocused = { onTabFocused(Tab.TV) }, modifier = downMod)
+            NavPill("TV", active = activeTab == Tab.TV, accent = accent, onFocused = { onTabFocused(Tab.TV) }, modifier = Modifier.focusRequester(navTvFocus).then(downMod))
         }
         Spacer(Modifier.width(10.dp))
         Focusable(onClick = onOpenSearch) { highlighted ->
+            // Mismo estilo que el botón de Info del banner: círculo de vidrio blanco
+            // con ícono blanco; solo un anillo blanco al enfocar (sin relleno de acento).
             Box(
                 modifier = Modifier
                     .size(34.dp)
                     .clip(CircleShape)
-                    .background(if (highlighted) accent else Color(0x14FFFFFF))
+                    .background(Color(0x24FFFFFF))
                     .then(if (highlighted) Modifier.border(2.dp, Color(0xB3FFFFFF), CircleShape) else Modifier),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(Icons.Filled.Search, contentDescription = "Buscar", tint = if (highlighted) Color.Black else Color(0x99FFFFFF), modifier = Modifier.size(16.dp))
+                Icon(Icons.Filled.Search, contentDescription = "Buscar", tint = Color.White, modifier = Modifier.size(16.dp))
             }
         }
 
@@ -942,6 +948,7 @@ private fun HomeHero(
             }
             Text(
                 card.title, color = Color.White, fontSize = metrics.heroTitleSize, fontWeight = FontWeight.Bold,
+                lineHeight = metrics.heroTitleSize * 1.08f,   // evita que 2 líneas se enciman
                 maxLines = 2, overflow = TextOverflow.Ellipsis,
                 textAlign = if (isPhone) TextAlign.Center else TextAlign.Start,
             )
@@ -973,14 +980,6 @@ private fun HomeHero(
                     }
                 }
             } else {
-                card.rating?.let {
-                    Spacer(Modifier.height(12.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Filled.Star, contentDescription = null, tint = Color(0xFFFFC107), modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(formatRating(it), color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                    }
-                }
                 card.overview?.let {
                     Spacer(Modifier.height(12.dp))
                     Text(it, color = Color(0xCCFFFFFF), fontSize = 15.sp, maxLines = metrics.heroOverviewLines, overflow = TextOverflow.Ellipsis)
@@ -1172,6 +1171,19 @@ private fun MediaCard(
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize().background(Color(0xFF1A1A1A)),
                 )
+                // Bibliotecas: título CENTRADO sobre el collage (como la web), con scrim.
+                if (card.isLibrary) {
+                    Box(
+                        modifier = Modifier.fillMaxSize().background(Color(0x66000000)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            card.title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 20.sp,
+                            textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(horizontal = 10.dp),
+                        )
+                    }
+                }
                 if (card.progress > 0f) {
                     Box(
                         modifier = Modifier
@@ -1181,12 +1193,33 @@ private fun MediaCard(
                             .background(accent),
                     )
                 }
+                // Badge de capítulos sin ver (esquina superior derecha), como la web.
+                if (!card.isLibrary) {
+                    card.unplayedCount?.let { count ->
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(6.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(accent)
+                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                        ) {
+                            Text(
+                                if (count > 99) "99+" else "$count",
+                                color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                            )
+                        }
+                    }
+                }
             }
         }
-        Spacer(Modifier.height(8.dp))
-        Text(card.title, style = MaterialTheme.typography.bodyMedium, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        card.subtitle?.let {
-            Text(it, style = MaterialTheme.typography.bodySmall, color = Color(0xFFB8B8B8), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        // Bibliotecas: sin texto abajo (el título va sobre la imagen).
+        if (!card.isLibrary) {
+            Spacer(Modifier.height(8.dp))
+            Text(card.title, style = MaterialTheme.typography.bodyMedium, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            card.subtitle?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = Color(0xFFB8B8B8), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
         }
     }
 }

@@ -139,14 +139,14 @@ fun MpvPlayerScreen(itemId: String, onExit: () -> Unit, onPlayItem: (String) -> 
     val hasEpisodes = state.episodes.isNotEmpty()
     val controls = remember(state.isLive, state.subtitles.isEmpty(), hasNext, hasEpisodes) {
         buildList {
-            if (state.isLive) {
-                add(Transport.PlayPause)
-            } else {
+            // Live: sin botones (OK muestra/oculta controles; arriba/abajo = canal).
+            if (!state.isLive) {
                 add(Transport.SeekBack); add(Transport.PlayPause); add(Transport.SeekFwd)
                 if (hasNext) add(Transport.NextEp)
                 add(Transport.Audio)
                 if (state.subtitles.isNotEmpty()) add(Transport.Subtitles)
                 if (hasEpisodes) add(Transport.Episodes)
+                add(Transport.Settings)
             }
         }
     }
@@ -181,6 +181,8 @@ fun MpvPlayerScreen(itemId: String, onExit: () -> Unit, onPlayItem: (String) -> 
             terminalError != null -> PlayerErrorScreen(message = terminalError, onExit = onExit)
             device.isTv -> TvPlayerOverlay(
                 title = state.title,
+                subtitle = state.subtitle,
+                channelNumber = state.channelNumber,
                 isPlaying = isPlaying,
                 isLive = state.isLive,
                 positionMs = positionMs,
@@ -192,9 +194,27 @@ fun MpvPlayerScreen(itemId: String, onExit: () -> Unit, onPlayItem: (String) -> 
                 onPause = mpv::pause,
                 onSeekBy = ::seekBy,
                 onNext = { state.nextEpisodeId?.let(onPlayItem) },
+                onPrevChannel = state.prevChannelId?.let { id -> { onPlayItem(id) } },
+                onNextChannel = state.nextChannelId?.let { id -> { onPlayItem(id) } },
                 audioItems = ::audioItems,
                 subtitleItems = ::subtitleItems,
                 episodeItems = ::episodeItems,
+                settingsItems = {
+                    settingsMenuItems(
+                        currentQualityLabel = qualityLabel(state.qualityBitrate),
+                        statsOn = statsVisible,
+                        onToggleStats = { statsVisible = !statsVisible },
+                    )
+                },
+                qualityItems = {
+                    qualityMenuItems(
+                        current = state.qualityBitrate,
+                        sourceHeight = state.sourceHeight,
+                        onPickQuality = { viewModel.setQuality(it) },
+                    )
+                },
+                statsVisible = statsVisible,
+                statsLines = { mpv.stats() },
                 onExit = onExit,
                 focus = tvOverlayFocus,
             )
@@ -217,11 +237,16 @@ fun MpvPlayerScreen(itemId: String, onExit: () -> Unit, onPlayItem: (String) -> 
                 subtitleItems = ::subtitleItems,
                 episodeItems = ::episodeItems,
                 settingsItems = {
-                    qualitySettingsItems(
-                        current = state.qualityBitrate,
-                        sourceHeight = state.sourceHeight,
+                    settingsMenuItems(
+                        currentQualityLabel = qualityLabel(state.qualityBitrate),
                         statsOn = statsVisible,
                         onToggleStats = { statsVisible = !statsVisible },
+                    )
+                },
+                qualityItems = {
+                    qualityMenuItems(
+                        current = state.qualityBitrate,
+                        sourceHeight = state.sourceHeight,
                         onPickQuality = { viewModel.setQuality(it) },
                     )
                 },

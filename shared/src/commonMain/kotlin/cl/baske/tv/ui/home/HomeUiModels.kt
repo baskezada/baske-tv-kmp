@@ -36,6 +36,8 @@ data class HomeCard(
     val seriesId: String? = null,
     /** true si es una card de biblioteca (Vista/CollectionFolder) → "Escanear biblioteca". */
     val isLibrary: Boolean = false,
+    /** Capítulos sin ver (series): badge en la esquina, como la web. null/0 = sin badge. */
+    val unplayedCount: Int? = null,
 )
 
 data class HomeRow(

@@ -24,6 +24,7 @@ data class BaseItemDto(
     @SerialName("SeriesName") val seriesName: String? = null,
     @SerialName("IndexNumber") val indexNumber: Int? = null,
     @SerialName("ParentIndexNumber") val parentIndexNumber: Int? = null,
+    @SerialName("ChannelNumber") val channelNumber: String? = null,
     @SerialName("ProductionYear") val productionYear: Int? = null,
     @SerialName("Status") val status: String? = null,
     @SerialName("Overview") val overview: String? = null,

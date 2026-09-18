@@ -187,15 +187,22 @@ fun DetailScreen(itemId: String, onBack: () -> Unit, onPlay: (String) -> Unit) {
     // Modal de temporadas.
     if (seasonsOpen) {
         ModalSheet("Temporadas", onDismiss = { seasonsOpen = false }) {
-            state.seasons.forEach { season ->
+            Spacer(Modifier.height(2.dp))
+            // Los "Especiales" (temporada 0) siempre al final de la lista.
+            val orderedSeasons = state.seasons.sortedBy { it.name.contains("especial", ignoreCase = true) }
+            orderedSeasons.forEach { season ->
                 SeasonModalRow(
                     season = season,
                     selected = season.id == state.selectedSeasonId,
                     accent = accent,
+                    modifier = Modifier.padding(horizontal = 16.dp),
                 ) { viewModel.selectSeason(season.id); seasonsOpen = false }
                 Spacer(Modifier.height(8.dp))
             }
-            FaltanTemporadasButton { viewModel.refreshMetadata(); seasonsOpen = false }
+            FaltanTemporadasButton(modifier = Modifier.padding(horizontal = 16.dp)) {
+                viewModel.refreshMetadata(); seasonsOpen = false
+            }
+            Spacer(Modifier.height(6.dp))
         }
     }
 
@@ -502,9 +509,10 @@ private fun SeasonModalRow(
     season: DetailViewModel.SeasonTab,
     selected: Boolean,
     accent: Color,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
-    Focusable(onClick = onClick, modifier = Modifier.fillMaxWidth()) { highlighted ->
+    Focusable(onClick = onClick, modifier = modifier.fillMaxWidth()) { highlighted ->
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -525,8 +533,8 @@ private fun SeasonModalRow(
 }
 
 @Composable
-private fun FaltanTemporadasButton(onClick: () -> Unit) {
-    Focusable(onClick = onClick, modifier = Modifier.fillMaxWidth()) { highlighted ->
+private fun FaltanTemporadasButton(modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Focusable(onClick = onClick, modifier = modifier.fillMaxWidth()) { highlighted ->
         Row(
             modifier = Modifier
                 .fillMaxWidth()

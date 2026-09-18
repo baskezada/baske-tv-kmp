@@ -82,5 +82,6 @@ fun BaseItemDto.toHomeCard(serverUrl: String, wide: Boolean): HomeCard {
         isFavorite = userData?.isFavorite ?: false,
         seriesId = seriesId,
         isLibrary = collectionType != null,
+        unplayedCount = userData?.unplayedItemCount?.takeIf { it > 0 },
     )
 }
